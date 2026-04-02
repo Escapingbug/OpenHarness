@@ -71,6 +71,23 @@ OpenHarness is an open-source Python implementation designed for **researchers, 
 - **Extend** the harness with custom plugins, providers, and domain knowledge
 - **Build** specialized agents on top of proven architecture
 
+### 🗺️ Harness Categories & Roadmap
+
+<p align="center">
+  <img src="assets/harness-categories.png" alt="Agent Harness Types" width="750">
+</p>
+
+| Harness Type | What it does | Status |
+|-------------|-------------|--------|
+| 🔧 **Coding Harness** | File I/O, shell execution, code search, review, MCP/LSP integration | ✅ Shipped in v0.1 |
+| 🔬 **Research Harness** | Experiment automation, hypothesis generation, paper analysis | 🔨 Roadmap |
+| 📈 **Finance Harness** | Market data mining, portfolio optimization, risk assessment | 🔨 Roadmap |
+| 🤝 **Swarm Harness** | Multi-agent coordination, team task distribution, async mailbox | 🔨 In progress |
+| 🔄 **Lifecycle Harness** | Session persistence, context compression, memory & resume | ✅ Shipped in v0.1 |
+| 🧩 **Domain Harness** | Healthcare, legal, education — custom tools, skills & permissions | 🔨 Roadmap |
+
+> **One framework, any domain.** OpenHarness provides the core harness primitives (tools, skills, plugins, permissions, memory). You bring the domain knowledge.
+
 ---
 
 ## 📰 What's New
