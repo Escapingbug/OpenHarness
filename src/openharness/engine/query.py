@@ -3,9 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import logging
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import AsyncIterator, Awaitable, Callable
+
+log = logging.getLogger(__name__)
 
 from openharness.api.client import (
     ApiMessageCompleteEvent,
@@ -194,8 +198,11 @@ async def _execute_tool_call(
                 is_error=True,
             )
 
+    log.debug("tool_call start: %s id=%s", tool_name, tool_use_id)
+
     tool = context.tool_registry.get(tool_name)
     if tool is None:
+        log.warning("unknown tool: %s", tool_name)
         return ToolResultBlock(
             tool_use_id=tool_use_id,
             content=f"Unknown tool: {tool_name}",
@@ -205,6 +212,7 @@ async def _execute_tool_call(
     try:
         parsed_input = tool.input_model.model_validate(tool_input)
     except Exception as exc:
+        log.warning("invalid input for %s: %s", tool_name, exc)
         return ToolResultBlock(
             tool_use_id=tool_use_id,
             content=f"Invalid input for {tool_name}: {exc}",
@@ -215,6 +223,8 @@ async def _execute_tool_call(
     # consistently across built-in tools that use either `file_path` or `path`.
     _file_path = _resolve_permission_file_path(context.cwd, tool_input, parsed_input)
     _command = _extract_permission_command(tool_input, parsed_input)
+    log.debug("permission check: %s read_only=%s path=%s cmd=%s",
+              tool_name, tool.is_read_only(parsed_input), _file_path, _command and _command[:80])
     decision = context.permission_checker.evaluate(
         tool_name,
         is_read_only=tool.is_read_only(parsed_input),
@@ -223,20 +233,25 @@ async def _execute_tool_call(
     )
     if not decision.allowed:
         if decision.requires_confirmation and context.permission_prompt is not None:
+            log.debug("permission prompt for %s: %s", tool_name, decision.reason)
             confirmed = await context.permission_prompt(tool_name, decision.reason)
             if not confirmed:
+                log.debug("permission denied by user for %s", tool_name)
                 return ToolResultBlock(
                     tool_use_id=tool_use_id,
                     content=f"Permission denied for {tool_name}",
                     is_error=True,
                 )
         else:
+            log.debug("permission blocked for %s: %s", tool_name, decision.reason)
             return ToolResultBlock(
                 tool_use_id=tool_use_id,
                 content=decision.reason or f"Permission denied for {tool_name}",
                 is_error=True,
             )
 
+    log.debug("executing %s ...", tool_name)
+    t0 = time.monotonic()
     result = await tool.execute(
         parsed_input,
         ToolExecutionContext(
@@ -248,6 +263,9 @@ async def _execute_tool_call(
             },
         ),
     )
+    elapsed = time.monotonic() - t0
+    log.debug("executed %s in %.2fs err=%s output_len=%d",
+              tool_name, elapsed, result.is_error, len(result.output or ""))
     tool_result = ToolResultBlock(
         tool_use_id=tool_use_id,
         content=result.output,

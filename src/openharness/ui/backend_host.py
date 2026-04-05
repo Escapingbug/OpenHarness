@@ -11,6 +11,8 @@ import sys
 from dataclasses import dataclass
 from uuid import uuid4
 
+log = logging.getLogger(__name__)
+
 from openharness.api.client import SupportsStreamingMessages
 from openharness.auth.manager import AuthManager
 from openharness.config.settings import CLAUDE_MODEL_ALIAS_OPTIONS, display_model_setting
@@ -683,6 +685,7 @@ class ReactBackendHost:
             self._question_requests.pop(request_id, None)
 
     async def _emit(self, event: BackendEvent) -> None:
+        log.debug("emit event: type=%s tool=%s", event.type, getattr(event, "tool_name", None))
         async with self._write_lock:
             payload = _PROTOCOL_PREFIX + event.model_dump_json() + "\n"
             buffer = getattr(sys.stdout, "buffer", None)
