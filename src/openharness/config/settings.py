@@ -55,6 +55,7 @@ class Settings(BaseModel):
     max_tokens: int = 16384
     base_url: str | None = None
     api_format: str = "anthropic"  # "anthropic", "openai", or "copilot"
+    max_turns: int = 32
 
     # Behavior
     system_prompt: str | None = None
@@ -124,6 +125,10 @@ def _apply_env_overrides(settings: Settings) -> Settings:
     max_tokens = os.environ.get("OPENHARNESS_MAX_TOKENS")
     if max_tokens:
         updates["max_tokens"] = int(max_tokens)
+
+    max_turns = os.environ.get("OPENHARNESS_MAX_TURNS")
+    if max_turns:
+        updates["max_turns"] = int(max_turns)
 
     api_key = os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("OPENAI_API_KEY")
     if api_key:

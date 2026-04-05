@@ -16,6 +16,7 @@ class TestSettings:
         assert s.api_key == ""
         assert s.model == "claude-sonnet-4-20250514"
         assert s.max_tokens == 16384
+        assert s.max_turns == 32
         assert s.fast_mode is False
         assert s.permission.mode == "default"
 
@@ -104,10 +105,12 @@ class TestLoadSaveSettings:
         path.write_text(json.dumps({"model": "from-file", "base_url": "https://file.example"}))
         monkeypatch.setenv("ANTHROPIC_MODEL", "from-env-model")
         monkeypatch.setenv("ANTHROPIC_BASE_URL", "https://env.example/anthropic")
+        monkeypatch.setenv("OPENHARNESS_MAX_TURNS", "42")
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-env-override")
 
         s = load_settings(path)
 
         assert s.model == "from-env-model"
         assert s.base_url == "https://env.example/anthropic"
+        assert s.max_turns == 42
         assert s.api_key == "sk-env-override"

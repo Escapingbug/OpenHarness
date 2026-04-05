@@ -17,6 +17,7 @@ async def run_repl(
     prompt: str | None = None,
     cwd: str | None = None,
     model: str | None = None,
+    max_turns: int | None = None,
     base_url: str | None = None,
     system_prompt: str | None = None,
     api_key: str | None = None,
@@ -30,6 +31,7 @@ async def run_repl(
         await run_backend_host(
             cwd=cwd,
             model=model,
+            max_turns=max_turns,
             base_url=base_url,
             system_prompt=system_prompt,
             api_key=api_key,
@@ -43,6 +45,7 @@ async def run_repl(
         prompt=prompt,
         cwd=cwd,
         model=model,
+        max_turns=max_turns,
         base_url=base_url,
         system_prompt=system_prompt,
         api_key=api_key,
@@ -84,6 +87,7 @@ async def run_print_mode(
     bundle = await build_runtime(
         prompt=prompt,
         model=model,
+        max_turns=max_turns,
         base_url=base_url,
         system_prompt=system_prompt,
         api_key=api_key,

@@ -64,6 +64,8 @@ class CommandResult:
     should_exit: bool = False
     clear_screen: bool = False
     replay_messages: list | None = None  # ConversationMessage list to replay in TUI
+    continue_pending: bool = False
+    continue_turns: int | None = None
 
 
 @dataclass
@@ -795,6 +797,55 @@ def create_default_command_registry() -> CommandRegistry:
             context.app_state.set(passes=passes)
         return CommandResult(message=f"Pass count set to {passes}.")
 
+    async def _turns_handler(args: str, context: CommandContext) -> CommandResult:
+        settings = load_settings()
+        tokens = args.split()
+        if not tokens or tokens[0] == "show":
+            return CommandResult(
+                message=(
+                    f"Max turns (engine): {context.engine.max_turns}\n"
+                    f"Max turns (config): {settings.max_turns}\n"
+                    "Usage: /turns [show|COUNT]"
+                )
+            )
+        if tokens[0] == "set" and len(tokens) == 2:
+            raw = tokens[1]
+        elif len(tokens) == 1:
+            raw = tokens[0]
+        else:
+            return CommandResult(message="Usage: /turns [show|COUNT]")
+        try:
+            turns = int(raw)
+        except ValueError:
+            return CommandResult(message="Usage: /turns [show|COUNT]")
+        turns = max(1, min(turns, 512))
+        settings.max_turns = turns
+        save_settings(settings)
+        context.engine.set_max_turns(turns)
+        return CommandResult(message=f"Max turns set to {turns}.")
+
+    async def _continue_handler(args: str, context: CommandContext) -> CommandResult:
+        raw = args.strip()
+        if not context.engine.has_pending_continuation():
+            return CommandResult(message="Nothing to continue (no pending tool results).")
+
+        turns: int | None = None
+        if raw:
+            tokens = raw.split()
+            if tokens[0] == "set" and len(tokens) == 2:
+                raw = tokens[1]
+            try:
+                turns = int(raw)
+            except ValueError:
+                return CommandResult(message="Usage: /continue [COUNT]")
+            turns = max(1, min(turns, 512))
+
+        return CommandResult(
+            message="Continuing pending tool loop...",
+            continue_pending=True,
+            continue_turns=turns,
+        )
+
     async def _issue_handler(args: str, context: CommandContext) -> CommandResult:
         path = get_project_issue_file(context.cwd)
         tokens = args.split(maxsplit=1)
@@ -1299,6 +1350,8 @@ def create_default_command_registry() -> CommandRegistry:
     registry.register(SlashCommand("fast", "Show or update fast mode", _fast_handler))
     registry.register(SlashCommand("effort", "Show or update reasoning effort", _effort_handler))
     registry.register(SlashCommand("passes", "Show or update reasoning pass count", _passes_handler))
+    registry.register(SlashCommand("turns", "Show or update maximum agentic turn count", _turns_handler))
+    registry.register(SlashCommand("continue", "Continue the previous tool loop if it was interrupted", _continue_handler))
     registry.register(SlashCommand("model", "Show or update the default model", _model_handler))
     registry.register(SlashCommand("theme", "Show or update the theme", _theme_handler))
     registry.register(SlashCommand("output-style", "Show or update output style", _output_style_handler))

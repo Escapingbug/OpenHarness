@@ -32,6 +32,14 @@ PermissionPrompt = Callable[[str, str], Awaitable[bool]]
 AskUserPrompt = Callable[[str], Awaitable[str]]
 
 
+class MaxTurnsExceeded(RuntimeError):
+    """Raised when the agent exceeds the configured max_turns for one user prompt."""
+
+    def __init__(self, max_turns: int) -> None:
+        super().__init__(f"Exceeded maximum turn limit ({max_turns})")
+        self.max_turns = max_turns
+
+
 @dataclass
 class QueryContext:
     """Context shared across a query run."""
@@ -142,7 +150,7 @@ async def run_query(
 
         messages.append(ConversationMessage(role="user", content=tool_results))
 
-    raise RuntimeError(f"Exceeded maximum turn limit ({context.max_turns})")
+    raise MaxTurnsExceeded(context.max_turns)
 
 
 async def _execute_tool_call(

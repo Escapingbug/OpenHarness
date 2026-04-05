@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Awaitable, Callable
@@ -14,7 +15,8 @@ from openharness.bridge import get_bridge_manager
 from openharness.commands import CommandContext, CommandResult, create_default_command_registry
 from openharness.config import get_config_file_path, load_settings
 from openharness.engine import QueryEngine
-from openharness.engine.messages import ConversationMessage
+from openharness.engine.messages import ConversationMessage, ToolResultBlock, ToolUseBlock
+from openharness.engine.query import MaxTurnsExceeded
 from openharness.engine.stream_events import StreamEvent
 from openharness.hooks import HookEvent, HookExecutionContext, HookExecutor, load_hook_registry
 from openharness.hooks.hot_reload import HookReloader
@@ -93,6 +95,7 @@ async def build_runtime(
     *,
     prompt: str | None = None,
     model: str | None = None,
+    max_turns: int | None = None,
     base_url: str | None = None,
     system_prompt: str | None = None,
     api_key: str | None = None,
@@ -105,6 +108,7 @@ async def build_runtime(
     """Build the shared runtime for an OpenHarness session."""
     settings = load_settings().merge_cli_overrides(
         model=model,
+        max_turns=max_turns,
         base_url=base_url,
         system_prompt=system_prompt,
         api_key=api_key,
@@ -173,6 +177,7 @@ async def build_runtime(
         model=settings.model,
         system_prompt=build_runtime_system_prompt(settings, cwd=cwd, latest_user_prompt=prompt),
         max_tokens=settings.max_tokens,
+        max_turns=settings.max_turns,
         permission_prompt=permission_prompt,
         ask_user_prompt=ask_user_prompt,
         hook_executor=hook_executor,
@@ -218,9 +223,73 @@ async def close_runtime(bundle: RuntimeBundle) -> None:
     )
 
 
+def _last_user_text(messages: list[ConversationMessage]) -> str:
+    for msg in reversed(messages):
+        if msg.role == "user" and msg.text.strip():
+            return msg.text.strip()
+    return ""
+
+
+def _truncate(text: str, limit: int) -> str:
+    if len(text) <= limit:
+        return text
+    return text[:limit] + "…"
+
+
+def _format_pending_tool_results(messages: list[ConversationMessage]) -> str | None:
+    """Render a compact summary when we stop after tool execution but before the follow-up model turn."""
+    if not messages:
+        return None
+
+    last = messages[-1]
+    if last.role != "user":
+        return None
+    tool_results = [block for block in last.content if isinstance(block, ToolResultBlock)]
+    if not tool_results:
+        return None
+
+    tool_uses_by_id: dict[str, ToolUseBlock] = {}
+    assistant_text = ""
+    for msg in reversed(messages[:-1]):
+        if msg.role != "assistant":
+            continue
+        if not msg.tool_uses:
+            continue
+        assistant_text = msg.text.strip()
+        for tu in msg.tool_uses:
+            tool_uses_by_id[tu.id] = tu
+        break
+
+    lines: list[str] = [
+        "Pending continuation: tool results were produced, but the model did not get a chance to respond yet."
+    ]
+    if assistant_text:
+        lines.append(f"Last assistant message: {_truncate(assistant_text, 400)}")
+
+    max_results = 3
+    for tr in tool_results[:max_results]:
+        tu = tool_uses_by_id.get(tr.tool_use_id)
+        if tu is not None:
+            raw_input = json.dumps(tu.input, ensure_ascii=True, sort_keys=True)
+            lines.append(
+                f"- {tu.name} {_truncate(raw_input, 200)} -> {_truncate(tr.content.strip(), 400)}"
+            )
+        else:
+            lines.append(
+                f"- tool_result[{tr.tool_use_id}] -> {_truncate(tr.content.strip(), 400)}"
+            )
+
+    if len(tool_results) > max_results:
+        lines.append(f"(+{len(tool_results) - max_results} more tool results)")
+
+    lines.append("To continue from these results, run: /continue 32 (or any count).")
+    return "\n".join(lines)
+
+
 def sync_app_state(bundle: RuntimeBundle) -> None:
     """Refresh UI state from current settings and dynamic keybindings."""
     settings = bundle.current_settings()
+    bundle.engine.set_max_turns(settings.max_turns)
     provider = detect_provider(settings)
     bundle.app_state.set(
         model=settings.model,
@@ -275,19 +344,61 @@ async def handle_line(
             ),
         )
         await _render_command_result(result, print_system, clear_output, render_event)
+        if result.continue_pending:
+            settings = bundle.current_settings()
+            bundle.engine.set_max_turns(settings.max_turns)
+            system_prompt = build_runtime_system_prompt(
+                settings,
+                cwd=bundle.cwd,
+                latest_user_prompt=_last_user_text(bundle.engine.messages),
+            )
+            bundle.engine.set_system_prompt(system_prompt)
+            turns = result.continue_turns if result.continue_turns is not None else bundle.engine.max_turns
+            try:
+                async for event in bundle.engine.continue_pending(max_turns=turns):
+                    await render_event(event)
+            except MaxTurnsExceeded as exc:
+                await print_system(f"Stopped after {exc.max_turns} turns (max_turns).")
+                pending = _format_pending_tool_results(bundle.engine.messages)
+                if pending:
+                    await print_system(pending)
+            save_session_snapshot(
+                cwd=bundle.cwd,
+                model=settings.model,
+                system_prompt=system_prompt,
+                messages=bundle.engine.messages,
+                usage=bundle.engine.total_usage,
+                session_id=bundle.session_id,
+            )
         sync_app_state(bundle)
         return not result.should_exit
 
     settings = bundle.current_settings()
-    bundle.engine.set_system_prompt(
-        build_runtime_system_prompt(settings, cwd=bundle.cwd, latest_user_prompt=line)
-    )
-    async for event in bundle.engine.submit_message(line):
-        await render_event(event)
+    bundle.engine.set_max_turns(settings.max_turns)
+    system_prompt = build_runtime_system_prompt(settings, cwd=bundle.cwd, latest_user_prompt=line)
+    bundle.engine.set_system_prompt(system_prompt)
+    try:
+        async for event in bundle.engine.submit_message(line):
+            await render_event(event)
+    except MaxTurnsExceeded as exc:
+        await print_system(f"Stopped after {exc.max_turns} turns (max_turns).")
+        pending = _format_pending_tool_results(bundle.engine.messages)
+        if pending:
+            await print_system(pending)
+        save_session_snapshot(
+            cwd=bundle.cwd,
+            model=settings.model,
+            system_prompt=system_prompt,
+            messages=bundle.engine.messages,
+            usage=bundle.engine.total_usage,
+            session_id=bundle.session_id,
+        )
+        sync_app_state(bundle)
+        return True
     save_session_snapshot(
         cwd=bundle.cwd,
         model=settings.model,
-        system_prompt=build_runtime_system_prompt(settings, cwd=bundle.cwd, latest_user_prompt=line),
+        system_prompt=system_prompt,
         messages=bundle.engine.messages,
         usage=bundle.engine.total_usage,
         session_id=bundle.session_id,

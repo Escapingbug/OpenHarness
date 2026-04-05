@@ -656,6 +656,7 @@ def main(
             prompt=None,
             cwd=cwd,
             model=model,
+            max_turns=max_turns,
             backend_only=backend_only,
             base_url=base_url,
             system_prompt=system_prompt,

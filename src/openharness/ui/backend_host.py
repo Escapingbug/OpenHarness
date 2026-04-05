@@ -31,6 +31,7 @@ class BackendHostConfig:
     """Configuration for one backend host session."""
 
     model: str | None = None
+    max_turns: int | None = None
     base_url: str | None = None
     system_prompt: str | None = None
     api_key: str | None = None
@@ -55,6 +56,7 @@ class ReactBackendHost:
     async def run(self) -> int:
         self._bundle = await build_runtime(
             model=self._config.model,
+            max_turns=self._config.max_turns,
             base_url=self._config.base_url,
             system_prompt=self._config.system_prompt,
             api_key=self._config.api_key,
@@ -284,6 +286,7 @@ class ReactBackendHost:
 async def run_backend_host(
     *,
     model: str | None = None,
+    max_turns: int | None = None,
     base_url: str | None = None,
     system_prompt: str | None = None,
     api_key: str | None = None,
@@ -298,6 +301,7 @@ async def run_backend_host(
     host = ReactBackendHost(
         BackendHostConfig(
             model=model,
+            max_turns=max_turns,
             base_url=base_url,
             system_prompt=system_prompt,
             api_key=api_key,
