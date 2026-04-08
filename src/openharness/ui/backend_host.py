@@ -51,6 +51,7 @@ class BackendHostConfig:
     api_format: str | None = None
     active_profile: str | None = None
     api_client: SupportsStreamingMessages | None = None
+    cwd: str | None = None
     restore_messages: list[dict] | None = None
     enforce_max_turns: bool = True
     permission_mode: str | None = None
@@ -742,6 +743,7 @@ async def run_backend_host(
             api_format=api_format,
             active_profile=active_profile,
             api_client=api_client,
+            cwd=cwd,
             restore_messages=restore_messages,
             enforce_max_turns=enforce_max_turns,
             permission_mode=permission_mode,
