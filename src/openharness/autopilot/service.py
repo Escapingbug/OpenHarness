@@ -1758,6 +1758,14 @@ class RepoAutopilotStore:
         return order.get(status, 99)
 
     def _render_dashboard_html(self, snapshot: dict[str, Any]) -> str:
+        """Return a minimal fallback HTML page.
+
+        The primary dashboard is now a React + Vite app built from
+        ``autopilot-dashboard/``.  This fallback is only written when
+        no pre-built ``index.html`` already exists in the output
+        directory, so local ``snapshot.json`` generation still works
+        without a Node.js toolchain.
+        """
         repo_name = escape(_safe_text(snapshot.get("repo_name")) or "OpenHarness")
         generated = time.strftime(
             "%Y-%m-%d %H:%M:%S UTC",
@@ -1769,262 +1777,42 @@ class RepoAutopilotStore:
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>{repo_name} Autopilot Kanban</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet" />
   <style>
     :root {{
-      --bg: #f4efe7;
-      --panel: rgba(255,255,255,0.82);
-      --ink: #1b2430;
-      --muted: #5b6875;
-      --line: rgba(27,36,48,0.12);
-      --accent: #0f7b6c;
-      --accent-soft: rgba(15,123,108,0.12);
-      --danger: #bb3e28;
-      --warn: #b7791f;
-      --shadow: 0 20px 40px rgba(27,36,48,0.08);
-      --radius: 18px;
-      --mono: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
-      --sans: "IBM Plex Sans", "Segoe UI", sans-serif;
+      --bg: #0a0a0a; --bg-elevated: #1a1a1a; --ink: #fff;
+      --accent: #00d4aa; --muted: #666; --line: #222;
+      --mono: "JetBrains Mono", ui-monospace, monospace;
     }}
-    * {{ box-sizing: border-box; }}
-    body {{
-      margin: 0;
-      font-family: var(--sans);
-      color: var(--ink);
-      background:
-        radial-gradient(circle at top left, rgba(15,123,108,0.14), transparent 30%),
-        radial-gradient(circle at right, rgba(187,62,40,0.12), transparent 28%),
-        linear-gradient(180deg, #f9f6ef 0%, var(--bg) 100%);
-    }}
-    .shell {{ max-width: 1600px; margin: 0 auto; padding: 32px 20px 56px; }}
-    .hero {{ display: grid; gap: 18px; grid-template-columns: 1.5fr 1fr; margin-bottom: 20px; }}
-    .panel {{
-      background: var(--panel);
-      border: 1px solid var(--line);
-      border-radius: var(--radius);
-      box-shadow: var(--shadow);
-      backdrop-filter: blur(10px);
-    }}
-    .hero-main {{ padding: 28px; min-height: 220px; }}
-    .eyebrow {{
-      display: inline-flex; gap: 8px; align-items: center; font-size: 12px; letter-spacing: 0.14em;
-      text-transform: uppercase; color: var(--accent); font-weight: 700; margin-bottom: 18px;
-    }}
-    h1 {{ margin: 0 0 12px; font-size: clamp(32px, 4vw, 52px); line-height: 0.96; }}
-    .sub {{ margin: 0; color: var(--muted); font-size: 16px; line-height: 1.6; max-width: 58ch; }}
-    .focus {{
-      margin-top: 20px; padding: 16px; border-radius: 14px; background: var(--accent-soft);
-      border: 1px solid rgba(15,123,108,0.14);
-    }}
-    .focus strong {{ display: block; margin-bottom: 6px; }}
-    .hero-side {{ padding: 22px; display: grid; gap: 12px; align-content: start; }}
-    .stat-grid {{ display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }}
-    .stat {{ padding: 14px; border-radius: 14px; border: 1px solid var(--line); background: rgba(255,255,255,0.72); }}
-    .stat .label {{ color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: 0.08em; }}
-    .stat .value {{ margin-top: 6px; font-size: 26px; font-weight: 700; }}
-    .toolbar {{
-      display: flex; gap: 12px; align-items: center; justify-content: space-between;
-      padding: 18px 20px; margin-bottom: 18px; flex-wrap: wrap;
-    }}
-    .toolbar input {{
-      min-width: min(420px, 100%); padding: 12px 14px; border-radius: 999px;
-      border: 1px solid var(--line); background: rgba(255,255,255,0.84); font: inherit;
-    }}
-    .toolbar .hint {{ color: var(--muted); font-size: 14px; }}
-    .board {{
-      display: grid; grid-template-columns: repeat(6, minmax(260px, 1fr)); gap: 14px;
-      overflow-x: auto; padding-bottom: 4px;
-    }}
-    .column {{ min-height: 280px; padding: 14px; }}
-    .column-header {{ display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 12px; gap: 8px; }}
-    .column-header h2 {{ margin: 0; font-size: 16px; }}
-    .count {{ color: var(--muted); font-size: 12px; font-family: var(--mono); }}
-    .cards {{ display: grid; gap: 12px; }}
-    .card {{
-      border-radius: 16px; border: 1px solid var(--line); background: rgba(255,255,255,0.9);
-      padding: 14px; transition: transform 160ms ease, box-shadow 160ms ease;
-    }}
-    .card:hover {{ transform: translateY(-2px); box-shadow: 0 14px 30px rgba(27,36,48,0.10); }}
-    .meta {{
-      display: flex; justify-content: space-between; gap: 8px; font-size: 12px;
-      color: var(--muted); margin-bottom: 8px; font-family: var(--mono);
-    }}
-    .card h3 {{ margin: 0 0 8px; font-size: 15px; line-height: 1.35; }}
-    .body {{
-      margin: 0 0 10px; color: var(--muted); font-size: 14px;
-      line-height: 1.5; white-space: pre-wrap;
-    }}
-    .tags {{ display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 10px; }}
-    .tag {{ font-size: 11px; padding: 4px 8px; border-radius: 999px; border: 1px solid var(--line); background: #fff; }}
-    .footer {{ border-top: 1px dashed var(--line); padding-top: 10px; display: grid; gap: 6px; font-size: 12px; color: var(--muted); }}
-    .journal {{ margin-top: 20px; padding: 22px; }}
-    .journal h2 {{ margin: 0 0 14px; font-size: 18px; }}
-    .journal-list {{ display: grid; gap: 10px; }}
-    .journal-item {{ padding: 12px 14px; border-radius: 14px; border: 1px solid var(--line); background: rgba(255,255,255,0.72); }}
-    .journal-item time {{ font-family: var(--mono); color: var(--muted); font-size: 12px; display: inline-block; margin-bottom: 4px; }}
-    .empty {{ color: var(--muted); font-style: italic; padding: 12px 4px; }}
-    .status-repairing {{ border-left: 4px solid #c05621; }}
-    .status-waiting_ci {{ border-left: 4px solid #2563eb; }}
-    .status-running {{ border-left: 4px solid var(--accent); }}
-    .status-verifying {{ border-left: 4px solid #1d4ed8; }}
-    .status-preparing {{ border-left: 4px solid #0f766e; }}
-    .status-accepted, .status-pr_open {{ border-left: 4px solid #7c3aed; }}
-    .status-queued {{ border-left: 4px solid #64748b; }}
-    .status-completed, .status-merged {{ border-left: 4px solid #15803d; }}
-    .status-failed, .status-rejected {{ border-left: 4px solid var(--danger); }}
-    .status-superseded {{ border-left: 4px solid var(--warn); }}
-    @media (max-width: 1100px) {{
-      .hero {{ grid-template-columns: 1fr; }}
-      .board {{ grid-template-columns: repeat(3, minmax(250px, 1fr)); }}
-    }}
-    @media (max-width: 760px) {{
-      .shell {{ padding: 18px 12px 36px; }}
-      .board {{ grid-template-columns: 1fr; }}
-      .toolbar input {{ min-width: 100%; }}
-    }}
+    * {{ box-sizing: border-box; margin: 0; padding: 0; }}
+    body {{ background: var(--bg); color: var(--ink); font-family: var(--mono); font-size: 13px; }}
+    .shell {{ max-width: 960px; margin: 80px auto; padding: 0 20px; text-align: center; }}
+    h1 {{ font-size: 32px; letter-spacing: 2px; margin-bottom: 16px; }}
+    h1 span {{ color: var(--accent); }}
+    .sub {{ color: var(--muted); font-size: 12px; line-height: 1.8; margin-bottom: 32px; }}
+    .info {{ background: var(--bg-elevated); border: 1px solid var(--line); border-radius: 6px; padding: 24px; text-align: left; }}
+    .info p {{ color: #888; font-size: 12px; line-height: 1.7; margin-bottom: 12px; }}
+    .info code {{ color: var(--accent); }}
+    .ts {{ color: var(--muted); font-size: 10px; letter-spacing: 1px; margin-top: 20px; }}
   </style>
 </head>
 <body>
   <div class="shell">
-    <section class="hero">
-      <div class="hero-main panel">
-        <div class="eyebrow">OpenHarness Autopilot</div>
-        <h1>{repo_name} self-evolution board</h1>
-        <p class="sub">
-          A static GitHub Pages view of the repo-local autopilot queue. Cards come from ohmo requests,
-          GitHub issues and PRs, and claude-code alignment candidates. Service-level verification remains the source of truth.
-        </p>
-        <div class="focus" id="focus-box">
-          <strong>Current focus</strong>
-          <div id="focus-text">Loading latest snapshot…</div>
-        </div>
-      </div>
-      <aside class="hero-side panel">
-        <div class="hint">Generated from repo state at {escape(generated)}</div>
-        <div class="stat-grid" id="stats"></div>
-      </aside>
-    </section>
-    <section class="toolbar panel">
-      <input id="search" type="search" placeholder="Filter by title, body, source, label, or task id" />
-      <div class="hint">This page reads <code>snapshot.json</code> and renders a kanban without any backend.</div>
-    </section>
-    <section class="board" id="board"></section>
-    <section class="journal panel">
-      <h2>Recent repo journal</h2>
-      <div class="journal-list" id="journal"></div>
-    </section>
+    <h1>{repo_name} <span>AUTOPILOT</span></h1>
+    <p class="sub">
+      This is a fallback page. The full React dashboard is built via CI
+      from <code>autopilot-dashboard/</code>.
+    </p>
+    <div class="info">
+      <p>To view the full dashboard locally, build the React app:</p>
+      <p><code>cd autopilot-dashboard &amp;&amp; npm install &amp;&amp; npm run build</code></p>
+      <p>Then open <code>docs/autopilot/index.html</code> in a browser.</p>
+      <p>Snapshot data: <code>snapshot.json</code> (generated {escape(generated)})</p>
+    </div>
+    <div class="ts">Generated at {escape(generated)}</div>
   </div>
-  <script>
-    const STATUS_LABELS = {{
-      queued: "Queued",
-      accepted: "Accepted",
-      preparing: "Preparing",
-      running: "Running",
-      verifying: "Verifying",
-      pr_open: "PR Open",
-      waiting_ci: "Waiting CI",
-      repairing: "Repairing",
-      completed: "Completed",
-      merged: "Merged",
-      failed: "Failed",
-      rejected: "Rejected",
-      superseded: "Superseded",
-    }};
-    const fmtAgo = (ts) => {{
-      if (!ts) return "-";
-      const delta = Math.max(0, Math.floor(Date.now() / 1000 - ts));
-      if (delta < 60) return `${{delta}}s ago`;
-      if (delta < 3600) return `${{Math.floor(delta / 60)}}m ago`;
-      if (delta < 86400) return `${{Math.floor(delta / 3600)}}h ago`;
-      return `${{Math.floor(delta / 86400)}}d ago`;
-    }};
-    const renderCard = (card) => {{
-      const labels = [...(card.labels || []), card.source_kind].filter(Boolean);
-      const verification = (card.metadata?.verification_steps || [])
-        .map((step) => `${{step.status}} · ${{step.command}}`)
-        .slice(0, 2)
-        .join(" | ");
-      return `
-        <article class="card status-${{card.status}}">
-          <div class="meta"><span>${{card.id}}</span><span>score ${{card.score}}</span></div>
-          <h3>${{card.title}}</h3>
-          <p class="body">${{(card.body || "").slice(0, 260) || "No extra detail."}}</p>
-          <div class="tags">${{labels.map((tag) => `<span class="tag">${{tag}}</span>`).join("")}}</div>
-          <div class="footer">
-            <div>updated ${{fmtAgo(card.updated_at)}}${{card.source_ref ? ` · ref ${{card.source_ref}}` : ""}}</div>
-            <div>${{card.metadata?.last_note || "no status note yet"}}</div>
-            <div>${{verification || card.metadata?.last_ci_summary || card.metadata?.last_failure_summary || (card.metadata?.human_gate_pending ? "verification passed; human gate pending" : "")}}</div>
-          </div>
-        </article>
-      `;
-    }};
-    const render = (snapshot, filterText = "") => {{
-      const counts = snapshot.counts || {{}};
-      const order = snapshot.status_order || [];
-      const board = document.getElementById("board");
-      const stats = document.getElementById("stats");
-      const journal = document.getElementById("journal");
-      const focusText = document.getElementById("focus-text");
-      const normalizedFilter = filterText.trim().toLowerCase();
-      stats.innerHTML = [
-        ["Queued", counts.queued || 0],
-        ["In progress", (counts.preparing || 0) + (counts.running || 0) + (counts.verifying || 0) + (counts.waiting_ci || 0) + (counts.repairing || 0) + (counts.accepted || 0) + (counts.pr_open || 0)],
-        ["Completed", (counts.completed || 0) + (counts.merged || 0)],
-        ["Failed", (counts.failed || 0) + (counts.rejected || 0)]
-      ].map(([label, value]) => `
-        <div class="stat">
-          <div class="label">${{label}}</div>
-          <div class="value">${{value}}</div>
-        </div>
-      `).join("");
-      focusText.textContent = snapshot.focus
-        ? `[${{snapshot.focus.status}}] ${{snapshot.focus.title}} · score=${{snapshot.focus.score}} · ${{snapshot.focus.source_kind}}`
-        : "No active task focus yet.";
-      board.innerHTML = order.map((status) => {{
-        const cards = (snapshot.columns?.[status] || []).filter((card) => {{
-          if (!normalizedFilter) return true;
-          const haystack = [
-            card.id,
-            card.title,
-            card.body,
-            card.source_kind,
-            card.source_ref,
-            ...(card.labels || []),
-            ...(card.score_reasons || []),
-          ].join(" ").toLowerCase();
-          return haystack.includes(normalizedFilter);
-        }});
-        return `
-          <section class="column panel">
-            <div class="column-header">
-              <h2>${{STATUS_LABELS[status] || status}}</h2>
-              <span class="count">${{cards.length}}</span>
-            </div>
-            <div class="cards">
-              ${{cards.length ? cards.map(renderCard).join("") : '<div class="empty">No cards in this column.</div>'}}
-            </div>
-          </section>
-        `;
-      }}).join("");
-      const entries = snapshot.journal || [];
-      journal.innerHTML = entries.length ? entries.slice().reverse().map((entry) => `
-        <article class="journal-item">
-          <time>${{new Date(entry.timestamp * 1000).toISOString().replace("T", " ").replace(".000Z", " UTC")}}</time>
-          <div><strong>${{entry.kind}}</strong>${{entry.task_id ? ` [${{entry.task_id}}]` : ""}}</div>
-          <div>${{entry.summary}}</div>
-        </article>
-      `).join("") : '<div class="empty">Journal is empty.</div>';
-    }};
-    fetch("./snapshot.json", {{ cache: "no-store" }})
-      .then((response) => response.json())
-      .then((snapshot) => {{
-        render(snapshot);
-        const search = document.getElementById("search");
-        search.addEventListener("input", () => render(snapshot, search.value));
-      }})
-      .catch((error) => {{
-        document.getElementById("board").innerHTML = `<div class="empty">Failed to load snapshot.json: ${{error}}</div>`;
-      }});
-  </script>
 </body>
 </html>
 """
