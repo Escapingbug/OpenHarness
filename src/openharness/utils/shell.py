@@ -6,7 +6,7 @@ import asyncio
 import os
 import shutil
 from collections.abc import Mapping
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 from openharness.config import Settings, load_settings
 from openharness.platforms import PlatformName, get_platform
@@ -18,26 +18,32 @@ def resolve_shell_command(
     *,
     platform_name: PlatformName | None = None,
     prefer_pty: bool = False,
+    settings: Settings | None = None,
 ) -> list[str]:
     """Return argv for the best available shell on the current platform."""
     resolved_platform = platform_name or get_platform()
+    resolved_settings = settings or Settings()
     if resolved_platform == "windows":
-        bash = shutil.which("bash")
-        if bash:
-            return [bash, "-lc", command]
-        powershell = shutil.which("pwsh") or shutil.which("powershell")
-        if powershell:
-            return [powershell, "-NoLogo", "-NoProfile", "-Command", command]
+        for candidate in resolved_settings.shell.windows_preference:
+            argv = _argv_for_windows_shell(candidate, command)
+            if argv is not None:
+                return argv
         return [shutil.which("cmd.exe") or "cmd.exe", "/d", "/s", "/c", command]
 
-    bash = shutil.which("bash")
-    if bash:
-        argv = [bash, "-lc", command]
-        if prefer_pty:
-            wrapped = _wrap_command_with_script(argv, platform_name=resolved_platform)
-            if wrapped is not None:
-                return wrapped
-        return argv
+    for candidate in resolved_settings.shell.posix_preference:
+        shell = _resolve_shell_path(candidate)
+        if shell:
+            argv = _argv_for_posix_shell(shell, command)
+            if _is_powershell(shell):
+                argv = [shell, "-NoLogo", "-NoProfile", "-Command", command]
+            if _is_cmd(shell):
+                continue
+            if prefer_pty:
+                wrapped = _wrap_command_with_script(argv, platform_name=resolved_platform)
+                if wrapped is not None:
+                    return wrapped
+            return argv
+
     shell = shutil.which("sh") or os.environ.get("SHELL") or "/bin/sh"
     argv = [shell, "-lc", command]
     if prefer_pty:
@@ -45,6 +51,57 @@ def resolve_shell_command(
         if wrapped is not None:
             return wrapped
     return argv
+
+
+def _argv_for_windows_shell(candidate: str, command: str) -> list[str] | None:
+    shell = _resolve_shell_path(candidate)
+    if shell is None:
+        return None
+    if _is_bash_like(shell):
+        return [shell, "-lc", command]
+    if _is_powershell(shell):
+        return [shell, "-NoLogo", "-NoProfile", "-Command", command]
+    if _is_cmd(shell):
+        return [shell, "/d", "/s", "/c", command]
+    return None
+
+
+def _argv_for_posix_shell(shell: str, command: str) -> list[str]:
+    return [shell, "-lc", command]
+
+
+def _resolve_shell_path(candidate: str) -> str | None:
+    shell = candidate.strip()
+    if not shell:
+        return None
+    if shell.lower() == "cmd":
+        shell = "cmd.exe"
+    resolved = shutil.which(shell)
+    if resolved:
+        return resolved
+    path = Path(shell).expanduser()
+    if path.exists():
+        return str(path)
+    return None
+
+
+def _shell_name(shell: str) -> str:
+    path_name = Path(shell).name
+    windows_name = PureWindowsPath(shell).name
+    name = windows_name if "\\" in shell else path_name
+    return name.lower().removesuffix(".exe")
+
+
+def _is_bash_like(shell: str) -> bool:
+    return _shell_name(shell) in {"bash", "sh"}
+
+
+def _is_powershell(shell: str) -> bool:
+    return _shell_name(shell) in {"pwsh", "powershell"}
+
+
+def _is_cmd(shell: str) -> bool:
+    return _shell_name(shell) == "cmd"
 
 
 async def create_shell_subprocess(
@@ -67,7 +124,7 @@ async def create_shell_subprocess(
 
         session = get_docker_sandbox()
         if session is not None and session.is_running:
-            argv = resolve_shell_command(command)
+            argv = resolve_shell_command(command, settings=resolved_settings)
             return await session.exec_command(
                 argv,
                 cwd=cwd,
@@ -82,7 +139,7 @@ async def create_shell_subprocess(
             raise SandboxUnavailableError("Docker sandbox session is not running")
 
     # Existing srt path
-    argv = resolve_shell_command(command, prefer_pty=prefer_pty)
+    argv = resolve_shell_command(command, prefer_pty=prefer_pty, settings=resolved_settings)
     argv, cleanup_path = wrap_command_for_sandbox(argv, settings=resolved_settings)
 
     try:

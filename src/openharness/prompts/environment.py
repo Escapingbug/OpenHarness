@@ -14,6 +14,10 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
+from openharness.config import Settings, load_settings
+from openharness.platforms import PlatformName, get_platform
+from openharness.utils.shell import _argv_for_windows_shell, _shell_name
+
 
 @dataclass
 class EnvironmentInfo:
@@ -53,8 +57,21 @@ def detect_os() -> tuple[str, str]:
     return system, platform.release()
 
 
-def detect_shell() -> str:
+def detect_shell(
+    *,
+    settings: Settings | None = None,
+    platform_name: PlatformName | None = None,
+) -> str:
     """Detect the user's shell."""
+    resolved_platform = platform_name or get_platform()
+    if resolved_platform == "windows":
+        resolved_settings = settings or load_settings()
+        for candidate in resolved_settings.shell.windows_preference:
+            argv = _argv_for_windows_shell(candidate, "")
+            if argv is not None:
+                return _shell_name(argv[0])
+        return "cmd"
+
     shell = os.environ.get("SHELL", "")
     if shell:
         return Path(shell).name
