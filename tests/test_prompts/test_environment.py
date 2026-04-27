@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-import os
 import subprocess
 from pathlib import Path
 
+from openharness.config.settings import Settings
 from openharness.prompts.environment import (
     EnvironmentInfo,
     detect_git_info,
@@ -24,24 +24,43 @@ def test_detect_os_returns_tuple():
 
 def test_detect_shell_returns_string(monkeypatch):
     monkeypatch.setenv("SHELL", "/bin/bash")
-    assert detect_shell() == "bash"
+    assert detect_shell(platform_name="linux") == "bash"
 
 
 def test_detect_shell_zsh(monkeypatch):
     monkeypatch.setenv("SHELL", "/usr/bin/zsh")
-    assert detect_shell() == "zsh"
+    assert detect_shell(platform_name="linux") == "zsh"
 
 
 def test_detect_shell_fallback(monkeypatch):
     monkeypatch.delenv("SHELL", raising=False)
-    shell = detect_shell()
+    shell = detect_shell(platform_name="linux")
     # Should find something on PATH or return "unknown"
     assert isinstance(shell, str)
 
 
+def test_detect_shell_uses_configured_windows_preference(monkeypatch):
+    def fake_which(name: str) -> str | None:
+        mapping = {
+            "bash": "C:/Windows/System32/bash.exe",
+            "pwsh": "C:/Program Files/PowerShell/7/pwsh.exe",
+        }
+        return mapping.get(name)
+
+    monkeypatch.setattr("openharness.utils.shell.shutil.which", fake_which)
+    settings = Settings(shell={"windows_preference": ["pwsh", "bash"]})
+
+    assert detect_shell(settings=settings, platform_name="windows") == "pwsh"
+
+
 def test_detect_git_info_in_repo(tmp_path: Path):
     # Create a git repo
-    os.system(f"git init {tmp_path} > /dev/null 2>&1")
+    subprocess.run(
+        ["git", "init", str(tmp_path)],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    )
     is_git, branch = detect_git_info(str(tmp_path))
     assert is_git is True
     # branch may be None for empty repo or "main"/"master"

@@ -57,6 +57,43 @@ def test_resolve_shell_command_uses_powershell_on_windows(monkeypatch):
     ]
 
 
+def test_resolve_shell_command_preserves_default_windows_bash_preference(monkeypatch):
+    def fake_which(name: str) -> str | None:
+        mapping = {
+            "bash": "C:/Windows/System32/bash.exe",
+            "pwsh": "C:/Program Files/PowerShell/7/pwsh.exe",
+        }
+        return mapping.get(name)
+
+    monkeypatch.setattr("openharness.utils.shell.shutil.which", fake_which)
+
+    command = resolve_shell_command("echo hi", platform_name="windows")
+
+    assert command == ["C:/Windows/System32/bash.exe", "-lc", "echo hi"]
+
+
+def test_resolve_shell_command_uses_configured_windows_preference(monkeypatch):
+    def fake_which(name: str) -> str | None:
+        mapping = {
+            "bash": "C:/Windows/System32/bash.exe",
+            "pwsh": "C:/Program Files/PowerShell/7/pwsh.exe",
+        }
+        return mapping.get(name)
+
+    monkeypatch.setattr("openharness.utils.shell.shutil.which", fake_which)
+    settings = Settings(shell={"windows_preference": ["pwsh", "bash", "cmd.exe"]})
+
+    command = resolve_shell_command("Write-Output hi", platform_name="windows", settings=settings)
+
+    assert command == [
+        "C:/Program Files/PowerShell/7/pwsh.exe",
+        "-NoLogo",
+        "-NoProfile",
+        "-Command",
+        "Write-Output hi",
+    ]
+
+
 def test_resolve_shell_command_skips_script_on_macos(monkeypatch):
     def fake_which(name: str) -> str | None:
         mapping = {

@@ -106,6 +106,15 @@ class SandboxSettings(BaseModel):
     docker: DockerSandboxSettings = Field(default_factory=DockerSandboxSettings)
 
 
+class ShellSettings(BaseModel):
+    """Shell lookup order for local command execution."""
+
+    windows_preference: list[str] = Field(
+        default_factory=lambda: ["bash", "pwsh", "powershell", "cmd.exe"]
+    )
+    posix_preference: list[str] = Field(default_factory=lambda: ["bash", "sh"])
+
+
 class ProviderProfile(BaseModel):
     """Named provider workflow configuration."""
 
@@ -460,6 +469,7 @@ class Settings(BaseModel):
     hooks: dict[str, list[HookDefinition]] = Field(default_factory=dict)
     memory: MemorySettings = Field(default_factory=MemorySettings)
     sandbox: SandboxSettings = Field(default_factory=SandboxSettings)
+    shell: ShellSettings = Field(default_factory=ShellSettings)
     enabled_plugins: dict[str, bool] = Field(default_factory=dict)
     allow_project_plugins: bool = False
     mcp_servers: dict[str, McpServerConfig] = Field(default_factory=dict)
