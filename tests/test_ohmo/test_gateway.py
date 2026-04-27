@@ -862,6 +862,60 @@ async def test_gateway_bridge_new_message_interrupts_same_session():
 
 
 @pytest.mark.asyncio
+async def test_gateway_bridge_interrupt_closes_stuck_runtime(monkeypatch):
+    monkeypatch.setattr("ohmo.gateway.bridge._INTERRUPT_WAIT_SECONDS", 0.01)
+    bus = MessageBus()
+    first_cancelled = asyncio.Event()
+    close_calls: list[str] = []
+
+    class FakeRuntimePool:
+        async def close_session(self, session_key):
+            close_calls.append(session_key)
+
+        async def stream_message(self, message, session_key):
+            if message.content == "first":
+                yield SimpleNamespace(
+                    kind="progress",
+                    text="🤔 想一想…",
+                    metadata={"_progress": True, "_session_key": session_key},
+                )
+                try:
+                    await asyncio.Event().wait()
+                except asyncio.CancelledError:
+                    first_cancelled.set()
+                    await asyncio.Event().wait()
+            else:
+                yield SimpleNamespace(
+                    kind="final",
+                    text="second-done",
+                    metadata={"_session_key": session_key},
+                )
+
+    bridge = OhmoGatewayBridge(bus=bus, runtime_pool=FakeRuntimePool())
+    task = asyncio.create_task(bridge.run())
+    try:
+        await bus.publish_inbound(
+            InboundMessage(channel="feishu", sender_id="u1", chat_id="c1", content="first")
+        )
+        await asyncio.wait_for(bus.consume_outbound(), timeout=1.0)
+        await bus.publish_inbound(
+            InboundMessage(channel="feishu", sender_id="u1", chat_id="c1", content="second")
+        )
+        interrupted = await asyncio.wait_for(bus.consume_outbound(), timeout=1.0)
+        final = await asyncio.wait_for(bus.consume_outbound(), timeout=1.0)
+        await asyncio.wait_for(first_cancelled.wait(), timeout=1.0)
+    finally:
+        bridge.stop()
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+    assert interrupted.content == "⏹️ 已停止上一条正在处理的任务，继续看你的最新消息。"
+    assert final.content == "second-done"
+    assert close_calls == ["feishu:c1:u1"]
+
+
+@pytest.mark.asyncio
 async def test_runtime_pool_logs_session_lifecycle(tmp_path, monkeypatch, caplog):
     workspace = tmp_path / ".ohmo-home"
     initialize_workspace(workspace)
