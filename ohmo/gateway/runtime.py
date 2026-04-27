@@ -152,6 +152,18 @@ class OhmoSessionRuntimePool:
         self._bundles[session_key] = bundle
         return bundle
 
+    async def close_session(self, session_key: str) -> None:
+        """Drop a session runtime after an interrupted turn."""
+        bundle = self._bundles.pop(session_key, None)
+        if bundle is None:
+            return
+        await close_runtime(bundle)
+        logger.info(
+            "ohmo runtime closed interrupted session session_key=%s session_id=%s",
+            session_key,
+            bundle.session_id,
+        )
+
     async def stream_message(self, message: InboundMessage, session_key: str):
         """Submit an inbound channel message and yield progress + final reply updates."""
         user_message = _build_inbound_user_message(message)

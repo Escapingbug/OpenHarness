@@ -13,6 +13,7 @@ from ohmo.gateway.router import session_key_for_message
 from ohmo.gateway.runtime import OhmoSessionRuntimePool
 
 logger = logging.getLogger(__name__)
+_INTERRUPT_WAIT_SECONDS = 3.0
 
 
 def _content_snippet(text: str, *, limit: int = 160) -> str:
@@ -163,9 +164,10 @@ class OhmoGatewayBridge:
         if notify is not None:
             await self._bus.publish_outbound(notify)
         try:
-            await asyncio.wait_for(asyncio.shield(task), timeout=3.0)
+            await asyncio.wait_for(asyncio.shield(task), timeout=_INTERRUPT_WAIT_SECONDS)
         except (asyncio.CancelledError, asyncio.TimeoutError):
             pass
+        await self._close_interrupted_session(session_key)
         return True
 
     async def _process_message(self, message, session_key: str) -> None:
@@ -189,6 +191,15 @@ class OhmoGatewayBridge:
                     update.kind,
                     _content_snippet(update.text),
                 )
+                if not self._is_current_session_task(session_key):
+                    logger.info(
+                        "ohmo ignoring stale session update channel=%s chat_id=%s session_key=%s kind=%s",
+                        message.channel,
+                        message.chat_id,
+                        session_key,
+                        update.kind,
+                    )
+                    return
                 await self._bus.publish_outbound(
                     OutboundMessage(
                         channel=message.channel,
@@ -231,6 +242,14 @@ class OhmoGatewayBridge:
             session_key,
             _content_snippet(reply),
         )
+        if not self._is_current_session_task(session_key):
+            logger.info(
+                "ohmo ignoring stale session final channel=%s chat_id=%s session_key=%s",
+                message.channel,
+                message.chat_id,
+                session_key,
+            )
+            return
         await self._bus.publish_outbound(
             OutboundMessage(
                 channel=message.channel,
@@ -240,8 +259,22 @@ class OhmoGatewayBridge:
             )
         )
 
+    def _is_current_session_task(self, session_key: str) -> bool:
+        return self._session_tasks.get(session_key) is asyncio.current_task()
+
+    async def _close_interrupted_session(self, session_key: str) -> None:
+        close_session = getattr(self._runtime_pool, "close_session", None)
+        if close_session is None:
+            return
+        try:
+            result = close_session(session_key)
+            if asyncio.iscoroutine(result):
+                await result
+        except Exception:
+            logger.exception("ohmo failed to close interrupted session session_key=%s", session_key)
+
     def _cleanup_task(self, session_key: str, task: asyncio.Task[None]) -> None:
         current = self._session_tasks.get(session_key)
         if current is task:
             self._session_tasks.pop(session_key, None)
-        self._session_cancel_reasons.pop(session_key, None)
+            self._session_cancel_reasons.pop(session_key, None)
