@@ -85,7 +85,8 @@ async def test_telegram_registers_stop_command(monkeypatch):
         telegram_mod,
         "MessageHandler",
         lambda filters, callback: SimpleNamespace(
-            kind="message",
+            kind="command" if isinstance(filters, telegram_mod.filters.Command) else "message",
+            command=filters,
             callback=callback,
         ),
     )
@@ -107,4 +108,16 @@ async def test_telegram_registers_stop_command(monkeypatch):
         for handler in registered_handlers
         if getattr(handler, "kind", None) == "command"
     ]
-    assert commands == ["start", "new", "stop", "help"]
+    expected_commands = [
+        "start", "help", "new", "compact", "status", "summary",
+        "cost", "usage", "model", "provider", "config", "memory",
+        "agents", "tasks", "fast", "effort", "export", "stop",
+    ]
+    for cmd in expected_commands:
+        assert cmd in commands, f"Expected /{cmd} to be registered"
+
+    # Catch-all handler should also be present
+    assert any(
+        getattr(h, "kind", None) == "command" and not isinstance(getattr(h, "command", None), str)
+        for h in registered_handlers
+    ), "Catch-all command handler (filters.COMMAND) should be registered"

@@ -97,6 +97,20 @@ class TelegramChannel(BaseChannel):
     BOT_COMMANDS = [
         BotCommand("start", "Start the bot"),
         BotCommand("new", "Start a new conversation"),
+        BotCommand("compact", "Compact conversation history"),
+        BotCommand("status", "Show session status"),
+        BotCommand("summary", "Summarize conversation history"),
+        BotCommand("cost", "Show token usage and estimated cost"),
+        BotCommand("usage", "Show usage and token estimates"),
+        BotCommand("model", "Show or update the default model"),
+        BotCommand("provider", "Show or switch provider profiles"),
+        BotCommand("config", "Show or update configuration"),
+        BotCommand("memory", "Inspect and manage project memory"),
+        BotCommand("agents", "List or inspect agent and teammate tasks"),
+        BotCommand("tasks", "Manage background tasks"),
+        BotCommand("fast", "Show or update fast mode"),
+        BotCommand("effort", "Show or update reasoning effort"),
+        BotCommand("export", "Export the current transcript"),
         BotCommand("stop", "Stop the current task"),
         BotCommand("help", "Show available commands"),
     ]
@@ -132,11 +146,36 @@ class TelegramChannel(BaseChannel):
         self._app = builder.build()
         self._app.add_error_handler(self._on_error)
 
-        # Add command handlers
+        # Add command handlers — /start and /help have dedicated local
+        # handlers; all other slash commands are forwarded to the message
+        # bus so the gateway runtime can dispatch them via CommandRegistry.
         self._app.add_handler(CommandHandler("start", self._on_start))
-        self._app.add_handler(CommandHandler("new", self._forward_command))
-        self._app.add_handler(CommandHandler("stop", self._forward_command))
         self._app.add_handler(CommandHandler("help", self._on_help))
+        self._app.add_handler(CommandHandler("new", self._forward_command))
+        self._app.add_handler(CommandHandler("compact", self._forward_command))
+        self._app.add_handler(CommandHandler("status", self._forward_command))
+        self._app.add_handler(CommandHandler("summary", self._forward_command))
+        self._app.add_handler(CommandHandler("cost", self._forward_command))
+        self._app.add_handler(CommandHandler("usage", self._forward_command))
+        self._app.add_handler(CommandHandler("model", self._forward_command))
+        self._app.add_handler(CommandHandler("provider", self._forward_command))
+        self._app.add_handler(CommandHandler("config", self._forward_command))
+        self._app.add_handler(CommandHandler("memory", self._forward_command))
+        self._app.add_handler(CommandHandler("agents", self._forward_command))
+        self._app.add_handler(CommandHandler("tasks", self._forward_command))
+        self._app.add_handler(CommandHandler("fast", self._forward_command))
+        self._app.add_handler(CommandHandler("effort", self._forward_command))
+        self._app.add_handler(CommandHandler("export", self._forward_command))
+        self._app.add_handler(CommandHandler("stop", self._forward_command))
+
+        # Catch-all for any other slash commands not explicitly registered
+        # above (e.g. /clear, /stats, /hooks, /skills, /resume, etc.).
+        # Without this handler, unrecognised /commands are silently dropped
+        # by the Telegram bot framework.
+        # NOTE: In python-telegram-bot v22+, CommandHandler requires a string
+        # command name; filters.COMMAND is a filter object, not iterable.
+        # Use MessageHandler with filters.COMMAND instead.
+        self._app.add_handler(MessageHandler(filters.COMMAND, self._forward_command))
 
         # Add message handler for text, photos, voice, documents
         self._app.add_handler(
@@ -314,6 +353,20 @@ class TelegramChannel(BaseChannel):
         await update.message.reply_text(
             "🐈 nanobot commands:\n"
             "/new — Start a new conversation\n"
+            "/compact — Compact conversation history\n"
+            "/status — Show session status\n"
+            "/summary — Summarize conversation history\n"
+            "/cost — Show token usage and estimated cost\n"
+            "/usage — Show usage and token estimates\n"
+            "/model — Show or update the default model\n"
+            "/provider — Show or switch provider profiles\n"
+            "/config — Show or update configuration\n"
+            "/memory — Inspect and manage project memory\n"
+            "/agents — List or inspect agent and teammate tasks\n"
+            "/tasks — Manage background tasks\n"
+            "/fast — Show or update fast mode\n"
+            "/effort — Show or update reasoning effort\n"
+            "/export — Export the current transcript\n"
             "/stop — Stop the current task\n"
             "/help — Show available commands"
         )
