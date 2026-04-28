@@ -12,7 +12,6 @@ from pathlib import Path, PureWindowsPath
 
 from openharness.config import Settings, load_settings
 from openharness.platforms import PlatformName, get_platform
-from openharness.sandbox import wrap_command_for_sandbox
 
 
 def resolve_shell_command(
@@ -53,6 +52,18 @@ def resolve_shell_command(
         if wrapped is not None:
             return wrapped
     return argv
+
+
+def wrap_command_for_sandbox(
+    command: list[str],
+    *,
+    settings: Settings | None = None,
+) -> tuple[list[str], Path | None]:
+    from openharness.sandbox.adapter import (
+        wrap_command_for_sandbox as _wrap_command_for_sandbox,
+    )
+
+    return _wrap_command_for_sandbox(command, settings=settings)
 
 
 def _argv_for_windows_shell(candidate: str, command: str) -> list[str] | None:
