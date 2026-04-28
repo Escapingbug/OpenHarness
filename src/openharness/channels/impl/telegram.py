@@ -391,7 +391,7 @@ class TelegramChannel(BaseChannel):
 
         user = update.effective_user
         thread_id = getattr(update.message, "message_thread_id", None)
-        reply_kwargs = {"quote": False}
+        reply_kwargs = {"do_quote": False}
         if thread_id:
             reply_kwargs["message_thread_id"] = thread_id
         await update.message.reply_text(
@@ -407,7 +407,7 @@ class TelegramChannel(BaseChannel):
         if not update.message:
             return
         thread_id = getattr(update.message, "message_thread_id", None)
-        reply_kwargs = {"quote": False}
+        reply_kwargs = {"do_quote": False}
         if thread_id:
             reply_kwargs["message_thread_id"] = thread_id
         await update.message.reply_text(
