@@ -12,6 +12,7 @@ from pathlib import Path
 from openharness.config import Settings
 from openharness.platforms import get_platform, get_platform_capabilities
 from openharness.sandbox.adapter import SandboxAvailability, SandboxUnavailableError
+from openharness.utils.shell import subprocess_run
 
 logger = logging.getLogger(__name__)
 
@@ -41,7 +42,7 @@ def get_docker_availability(settings: Settings) -> SandboxAvailability:
         )
 
     try:
-        subprocess.run(
+        subprocess_run(
             [docker, "info"],
             capture_output=True,
             timeout=5,
@@ -185,7 +186,7 @@ class DockerSandboxSession:
             return
         docker = shutil.which("docker") or "docker"
         try:
-            subprocess.run(
+            subprocess_run(
                 [docker, "stop", "-t", "3", self._container_name],
                 capture_output=True,
                 timeout=10,

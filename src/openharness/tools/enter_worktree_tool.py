@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-import subprocess
-from pathlib import Path
 import re
+from pathlib import Path
 
 from pydantic import BaseModel, Field
 
 from openharness.tools.base import BaseTool, ToolExecutionContext, ToolResult
+from openharness.utils.shell import subprocess_run
 
 
 class EnterWorktreeToolInput(BaseModel):
@@ -44,7 +44,7 @@ class EnterWorktreeTool(BaseTool):
             cmd.extend(["-b", arguments.branch, str(worktree_path), arguments.base_ref])
         else:
             cmd.extend([str(worktree_path), arguments.branch])
-        result = subprocess.run(
+        result = subprocess_run(
             cmd,
             cwd=repo_root,
             capture_output=True,
@@ -58,7 +58,7 @@ class EnterWorktreeTool(BaseTool):
 
 
 def _git_output(cwd: Path, *args: str) -> str | None:
-    result = subprocess.run(
+    result = subprocess_run(
         ["git", *args],
         cwd=cwd,
         capture_output=True,

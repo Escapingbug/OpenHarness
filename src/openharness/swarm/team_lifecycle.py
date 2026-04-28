@@ -16,7 +16,6 @@ import json
 import os
 import re
 import shutil
-import subprocess
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -24,6 +23,7 @@ from typing import Any, Literal
 
 from openharness.swarm.mailbox import get_team_dir
 from openharness.swarm.types import BackendType
+from openharness.utils.shell import subprocess_run
 
 
 # ---------------------------------------------------------------------------
@@ -718,7 +718,7 @@ async def _destroy_worktree(worktree_path: str) -> None:
 
     if main_repo_path:
         try:
-            result = subprocess.run(
+            result = subprocess_run(
                 ["git", "worktree", "remove", "--force", worktree_path],
                 cwd=main_repo_path,
                 capture_output=True,

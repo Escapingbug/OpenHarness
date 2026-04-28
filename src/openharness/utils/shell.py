@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 import os
 import shutil
+import subprocess
+import sys
 from collections.abc import Mapping
 from pathlib import Path, PureWindowsPath
 
@@ -143,7 +145,7 @@ async def create_shell_subprocess(
     argv, cleanup_path = wrap_command_for_sandbox(argv, settings=resolved_settings)
 
     try:
-        process = await asyncio.create_subprocess_exec(
+        process = await async_subprocess_exec(
             *argv,
             cwd=str(Path(cwd).resolve()),
             stdin=stdin,
@@ -182,3 +184,56 @@ async def _cleanup_after_exit(process: asyncio.subprocess.Process, cleanup_path:
         await process.wait()
     finally:
         cleanup_path.unlink(missing_ok=True)
+
+
+def _win_creationflags(overrides: int = 0) -> dict:
+    """Return creationflags for subprocess calls on Windows.
+
+    If *overrides* is provided (e.g. ``DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP``),
+    ``CREATE_NO_WINDOW`` is OR'd into it.  On non-Windows platforms an empty dict
+    is returned.
+    """
+    if sys.platform == "win32":
+        return {"creationflags": overrides | subprocess.CREATE_NO_WINDOW}
+    return {}
+
+
+def subprocess_run(*args, **kwargs):
+    """Wrapper around ``subprocess.run`` that suppresses the console window
+    on Windows (``CREATE_NO_WINDOW``).  Drop-in replacement: change
+    ``subprocess.run(...)`` to ``subprocess_run(...)``.
+    """
+    existing_flags = kwargs.pop("creationflags", 0)
+    merged = {**kwargs, **_win_creationflags(existing_flags)}
+    return subprocess.run(*args, **merged)
+
+
+def subprocess_popen(*args, **kwargs):
+    """Wrapper around ``subprocess.Popen`` that suppresses the console window
+    on Windows (``CREATE_NO_WINDOW``).  Drop-in replacement: change
+    ``subprocess.Popen(...)`` to ``subprocess_popen(...)``.
+    """
+    existing_flags = kwargs.pop("creationflags", 0)
+    merged = {**kwargs, **_win_creationflags(existing_flags)}
+    return subprocess.Popen(*args, **merged)
+
+
+def subprocess_check_output(*args, **kwargs):
+    """Wrapper around ``subprocess.check_output`` that suppresses the console
+    window on Windows (``CREATE_NO_WINDOW``).  Drop-in replacement: change
+    ``subprocess.check_output(...)`` to ``subprocess_check_output(...)``.
+    """
+    existing_flags = kwargs.pop("creationflags", 0)
+    merged = {**kwargs, **_win_creationflags(existing_flags)}
+    return subprocess.check_output(*args, **merged)
+
+
+async def async_subprocess_exec(*argv: str, **kwargs: object) -> asyncio.subprocess.Process:
+    """Wrapper around ``asyncio.create_subprocess_exec`` that suppresses the
+    console window on Windows (``CREATE_NO_WINDOW``).  Drop-in replacement:
+    change ``asyncio.create_subprocess_exec(*cmd, ...)`` to
+    ``await async_subprocess_exec(*cmd, ...)``.
+    """
+    existing_flags = kwargs.pop("creationflags", 0)
+    merged = {**kwargs, **_win_creationflags(existing_flags)}
+    return await asyncio.create_subprocess_exec(*argv, **merged)

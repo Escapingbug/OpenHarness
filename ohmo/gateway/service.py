@@ -19,6 +19,7 @@ if sys.platform == "win32":
 from openharness.channels.bus.events import OutboundMessage
 from openharness.channels.bus.queue import MessageBus
 from openharness.channels.impl.manager import ChannelManager
+from openharness.utils.shell import subprocess_popen, subprocess_run
 
 from ohmo.gateway.bridge import OhmoGatewayBridge
 from ohmo.gateway.config import build_channel_manager_config, load_gateway_config
@@ -122,7 +123,19 @@ class OhmoGatewayService:
             root,
         ]
         logger.info("ohmo gateway restarting in-place argv=%s", argv)
-        os.execv(sys.executable, argv)
+        if sys.platform == "win32":
+            self.log_file.parent.mkdir(parents=True, exist_ok=True)
+            log_file = self.log_file.open("a", encoding="utf-8")
+            subprocess_popen(
+                argv,
+                cwd=self._cwd,
+                stdin=subprocess.DEVNULL,
+                stdout=log_file,
+                stderr=log_file,
+                creationflags=subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS,
+            )
+        else:
+            os.execv(sys.executable, argv)
 
     async def _publish_pending_restart_notice(self) -> None:
         path = get_gateway_restart_notice_path(self._workspace)
@@ -216,7 +229,7 @@ def start_gateway_process(cwd: str | Path | None = None, workspace: str | Path |
         "env": env,
     }
     if sys.platform == "win32":
-        popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS  # type: ignore[attr-defined]
+        popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS
         popen_kwargs["stdin"] = subprocess.DEVNULL
     else:
         popen_kwargs["start_new_session"] = True
@@ -224,7 +237,7 @@ def start_gateway_process(cwd: str | Path | None = None, workspace: str | Path |
     with service.log_file.open("a", encoding="utf-8") as log_file:
         popen_kwargs["stdout"] = log_file
         popen_kwargs["stderr"] = log_file
-        process = subprocess.Popen(
+        process = subprocess_popen(
             [
                 sys.executable,
                 "-m",
@@ -267,7 +280,7 @@ def _iter_workspace_gateway_pids(workspace: str | Path | None = None) -> list[in
     root = str(get_workspace_root(workspace))
     if sys.platform == "win32":
         try:
-            result = subprocess.run(
+            result = subprocess_run(
                 ["wmic", "process", "where",
                  f"commandline like '%-m ohmo gateway run%' and commandline like '%--workspace {root}%'",
                  "get", "processid"],
@@ -292,7 +305,7 @@ def _iter_workspace_gateway_pids(workspace: str | Path | None = None) -> list[in
         return pids
     else:
         try:
-            result = subprocess.run(
+            result = subprocess_run(
                 ["ps", "-eo", "pid=,args="],
                 capture_output=True,
                 text=True,
@@ -343,7 +356,7 @@ def stop_gateway_process(cwd: str | Path | None = None, workspace: str | Path | 
     if sys.platform == "win32":
         for pid in unique_pids:
             with contextlib.suppress(Exception):
-                subprocess.run(
+                subprocess_run(
                     ["taskkill", "/F", "/T", "/PID", str(pid)],
                     capture_output=True,
                     check=False,

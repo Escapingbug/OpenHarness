@@ -14,6 +14,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
+from openharness.utils.shell import subprocess_run
+
 from openharness.config import Settings, load_settings
 from openharness.platforms import PlatformName, get_platform
 from openharness.utils.shell import _argv_for_windows_shell, _shell_name
@@ -87,7 +89,7 @@ def detect_shell(
 def detect_git_info(cwd: str) -> tuple[bool, str | None]:
     """Check if cwd is inside a git repo and return (is_git_repo, branch_name)."""
     try:
-        result = subprocess.run(
+        result = subprocess_run(
             ["git", "rev-parse", "--is-inside-work-tree"],
             capture_output=True,
             text=True,
@@ -103,7 +105,7 @@ def detect_git_info(cwd: str) -> tuple[bool, str | None]:
         return False, None
 
     try:
-        result = subprocess.run(
+        result = subprocess_run(
             ["git", "rev-parse", "--abbrev-ref", "HEAD"],
             capture_output=True,
             text=True,

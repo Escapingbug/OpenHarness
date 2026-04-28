@@ -8,6 +8,8 @@ import os
 import shlex
 import subprocess
 import tempfile
+
+from openharness.utils.shell import subprocess_run
 import time
 from dataclasses import dataclass
 from hashlib import sha1
@@ -1233,7 +1235,7 @@ class RepoAutopilotStore:
         shell: bool = False,
         check: bool = False,
     ) -> subprocess.CompletedProcess[str]:
-        completed = subprocess.run(
+        completed = subprocess_run(
             command,
             cwd=cwd or self._cwd,
             text=True,
@@ -1979,7 +1981,7 @@ class RepoAutopilotStore:
 
     def _run_gh_json(self, command: list[str]) -> list[dict[str, Any]]:
         try:
-            completed = subprocess.run(
+            completed = subprocess_run(
                 command,
                 cwd=self._cwd,
                 capture_output=True,
@@ -2106,7 +2108,7 @@ class RepoAutopilotStore:
                 continue
             target: str | list[str] = cmd.raw if cmd.shell else list(cmd.argv)
             try:
-                completed = subprocess.run(
+                completed = subprocess_run(
                     target,
                     cwd=cwd or self._cwd,
                     shell=cmd.shell,

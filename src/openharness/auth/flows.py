@@ -9,6 +9,8 @@ from __future__ import annotations
 import logging
 import platform
 import subprocess
+
+from openharness.utils.shell import subprocess_popen
 import sys
 from abc import ABC, abstractmethod
 from typing import Any
@@ -79,10 +81,10 @@ class DeviceCodeFlow(AuthFlow):
         try:
             plat = platform.system()
             if plat == "Darwin":
-                subprocess.Popen(["open", url], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                subprocess_popen(["open", url], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 return True
             if plat == "Windows":
-                subprocess.Popen(
+                subprocess_popen(
                     ["start", "", url],
                     shell=True,
                     stdout=subprocess.DEVNULL,
@@ -90,7 +92,7 @@ class DeviceCodeFlow(AuthFlow):
                 )
                 return True
             # Linux / WSL
-            proc = subprocess.Popen(
+            proc = subprocess_popen(
                 ["xdg-open", url],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,

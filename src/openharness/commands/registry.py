@@ -14,6 +14,8 @@ from typing import TYPE_CHECKING, Awaitable, Callable, Literal, get_args, Iterab
 
 import pyperclip
 
+from openharness.utils.shell import subprocess_run
+
 from openharness.autopilot import RepoAutopilotStore
 from openharness.auth.manager import AuthManager
 from openharness.config.paths import (
@@ -150,7 +152,7 @@ class CommandRegistry:
 
 def _run_git_command(cwd: str, *args: str) -> tuple[bool, str]:
     try:
-        completed = subprocess.run(
+        completed = subprocess_run(
             ["git", *args],
             cwd=cwd,
             capture_output=True,
@@ -172,7 +174,7 @@ def _copy_to_clipboard(text: str) -> tuple[bool, str]:
     except Exception:
         for command in (["pbcopy"], ["wl-copy"], ["xclip", "-selection", "clipboard"], ["xsel", "--clipboard"]):
             try:
-                subprocess.run(command, input=text, text=True, check=True, capture_output=True)
+                subprocess_run(command, input=text, text=True, check=True, capture_output=True)
                 return True, "clipboard"
             except Exception:
                 continue

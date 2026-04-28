@@ -9,6 +9,8 @@ import platform
 import re
 import subprocess
 import time
+
+from openharness.utils.shell import subprocess_run, subprocess_check_output
 import urllib.error
 import urllib.request
 import uuid
@@ -257,11 +259,11 @@ def _read_claude_credentials_from_keychain(
 ) -> tuple[dict[str, Any], Path, str, str | None]:
     service = binding.source_path.removeprefix(_KEYCHAIN_BINDING_PREFIX).strip() or CLAUDE_KEYCHAIN_SERVICE
     try:
-        raw_payload = subprocess.check_output(
+        raw_payload = subprocess_check_output(
             ["security", "find-generic-password", "-w", "-s", service],
             text=True,
         )
-        metadata = subprocess.check_output(
+        metadata = subprocess_check_output(
             ["security", "find-generic-password", "-s", service],
             text=True,
         )
@@ -360,7 +362,7 @@ def get_claude_code_version() -> str:
         return _claude_code_version_cache
     for command in ("claude", "claude-code"):
         try:
-            result = subprocess.run(
+            result = subprocess_run(
                 [command, "--version"],
                 capture_output=True,
                 text=True,
@@ -518,7 +520,7 @@ def _write_claude_credentials_to_keychain(
         refresh_token=refresh_token,
         expires_at_ms=expires_at_ms,
     )
-    subprocess.run(
+    subprocess_run(
         [
             "security",
             "add-generic-password",

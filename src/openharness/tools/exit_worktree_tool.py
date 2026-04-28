@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-import subprocess
 from pathlib import Path
 
 from pydantic import BaseModel, Field
 
 from openharness.tools.base import BaseTool, ToolExecutionContext, ToolResult
+from openharness.utils.shell import subprocess_run
 
 
 class ExitWorktreeToolInput(BaseModel):
@@ -31,7 +31,7 @@ class ExitWorktreeTool(BaseTool):
         path = Path(arguments.path).expanduser()
         if not path.is_absolute():
             path = (context.cwd / path).resolve()
-        result = subprocess.run(
+        result = subprocess_run(
             ["git", "worktree", "remove", "--force", str(path)],
             cwd=context.cwd,
             capture_output=True,
