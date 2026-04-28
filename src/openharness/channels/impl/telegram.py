@@ -310,21 +310,31 @@ class TelegramChannel(BaseChannel):
             return
 
         user = update.effective_user
+        thread_id = getattr(update.message, "message_thread_id", None)
+        reply_kwargs = {"quote": False}
+        if thread_id:
+            reply_kwargs["message_thread_id"] = thread_id
         await update.message.reply_text(
             f"👋 Hi {user.first_name}! I'm nanobot.\n\n"
             "Send me a message and I'll respond!\n"
-            "Type /help to see available commands."
+            "Type /help to see available commands.",
+            **reply_kwargs,
         )
 
     async def _on_help(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle /help command, bypassing ACL so all users can access it."""
         if not update.message:
             return
+        thread_id = getattr(update.message, "message_thread_id", None)
+        reply_kwargs = {"quote": False}
+        if thread_id:
+            reply_kwargs["message_thread_id"] = thread_id
         await update.message.reply_text(
             "🐈 nanobot commands:\n"
             "/new — Start a new conversation\n"
             "/stop — Stop the current task\n"
-            "/help — Show available commands"
+            "/help — Show available commands",
+            **reply_kwargs,
         )
 
     @staticmethod
@@ -337,10 +347,19 @@ class TelegramChannel(BaseChannel):
         """Forward slash commands to the bus for unified handling in AgentLoop."""
         if not update.message or not update.effective_user:
             return
+        message = update.message
         await self._handle_message(
             sender_id=self._sender_id(update.effective_user),
-            chat_id=str(update.message.chat_id),
-            content=update.message.text,
+            chat_id=str(message.chat_id),
+            content=message.text,
+            metadata={
+                "message_id": message.message_id,
+                "message_thread_id": getattr(message, "message_thread_id", None),
+                "user_id": update.effective_user.id,
+                "username": update.effective_user.username,
+                "first_name": update.effective_user.first_name,
+                "is_group": message.chat.type != "private",
+            },
         )
 
     async def _on_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -430,7 +449,9 @@ class TelegramChannel(BaseChannel):
                     "sender_id": sender_id, "chat_id": str_chat_id,
                     "contents": [], "media": [],
                     "metadata": {
-                        "message_id": message.message_id, "user_id": user.id,
+                        "message_id": message.message_id,
+                        "message_thread_id": getattr(message, "message_thread_id", None),
+                        "user_id": user.id,
                         "username": user.username, "first_name": user.first_name,
                         "is_group": message.chat.type != "private",
                     },
@@ -455,6 +476,7 @@ class TelegramChannel(BaseChannel):
             media=media_paths,
             metadata={
                 "message_id": message.message_id,
+                "message_thread_id": getattr(message, "message_thread_id", None),
                 "user_id": user.id,
                 "username": user.username,
                 "first_name": user.first_name,
