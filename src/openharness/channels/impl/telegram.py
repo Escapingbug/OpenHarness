@@ -308,6 +308,9 @@ class TelegramChannel(BaseChannel):
                     allow_sending_without_reply=True
                 )
 
+        # Topic (forum) thread ID — pass through so replies land in the same topic
+        thread_id = msg.metadata.get("message_thread_id")
+
         # Send media files
         for media_path in (msg.media or []):
             try:
@@ -322,6 +325,7 @@ class TelegramChannel(BaseChannel):
                     await sender(
                         chat_id=chat_id,
                         **{param: f},
+                        message_thread_id=thread_id,
                         reply_parameters=reply_params
                     )
             except Exception as e:
@@ -330,6 +334,7 @@ class TelegramChannel(BaseChannel):
                 await self._app.bot.send_message(
                     chat_id=chat_id,
                     text=f"[Failed to send: {filename}]",
+                    message_thread_id=thread_id,
                     reply_parameters=reply_params
                 )
 
@@ -337,37 +342,42 @@ class TelegramChannel(BaseChannel):
         if msg.content and msg.content != "[empty message]":
             is_progress = msg.metadata.get("_progress", False)
             draft_id = msg.metadata.get("message_id")
+            use_draft = is_progress and draft_id and chat_id > 0
 
             for chunk in split_message(msg.content, TELEGRAM_MAX_MESSAGE_LEN):
                 try:
                     html = _markdown_to_telegram_html(chunk)
-                    if is_progress and draft_id:
+                    if use_draft:
                         await self._app.bot.send_message_draft(
                             chat_id=chat_id,
                             draft_id=draft_id,
                             text=html,
+                            message_thread_id=thread_id,
                             parse_mode="HTML"
                         )
                     else:
                         await self._app.bot.send_message(
                             chat_id=chat_id,
                             text=html,
+                            message_thread_id=thread_id,
                             parse_mode="HTML",
                             reply_parameters=reply_params
                         )
                 except Exception as e:
                     logger.warning("HTML parse failed, falling back to plain text: %s", e)
                     try:
-                        if is_progress and draft_id:
+                        if use_draft:
                             await self._app.bot.send_message_draft(
                                 chat_id=chat_id,
                                 draft_id=draft_id,
+                                message_thread_id=thread_id,
                                 text=chunk
                             )
                         else:
                             await self._app.bot.send_message(
                                 chat_id=chat_id,
                                 text=chunk,
+                                message_thread_id=thread_id,
                                 reply_parameters=reply_params
                             )
                     except Exception as e2:
