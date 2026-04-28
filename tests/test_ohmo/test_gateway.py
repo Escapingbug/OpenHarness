@@ -14,7 +14,7 @@ from openharness.channels.bus.queue import MessageBus
 from openharness.commands import CommandResult
 from openharness.commands.registry import SlashCommand
 from openharness.engine.messages import ConversationMessage, ImageBlock, TextBlock, ToolUseBlock
-from openharness.engine.stream_events import AssistantTextDelta, CompactProgressEvent, ToolExecutionStarted
+from openharness.engine.stream_events import AssistantTextDelta, AssistantTurnComplete, CompactProgressEvent, ToolExecutionStarted
 
 from ohmo.gateway.bridge import OhmoGatewayBridge, _format_gateway_error
 from ohmo.gateway.config import save_gateway_config
@@ -257,6 +257,77 @@ async def test_runtime_pool_stream_message_emits_progress_and_tool_hint(tmp_path
     assert "web_fetch" in updates[1].text
     assert updates[-1].kind == "final"
     assert updates[-1].text == "done"
+
+
+@pytest.mark.asyncio
+async def test_runtime_pool_flushes_text_before_tool_call_as_progress(tmp_path, monkeypatch):
+    """Text produced before a tool call should be flushed as a text_progress
+    update so channels can display it (draft in private chats, standalone
+    message in groups).  It should not leak into the final reply."""
+    workspace = tmp_path / ".ohmo-home"
+    initialize_workspace(workspace)
+
+    async def fake_build_runtime(**kwargs):
+        class FakeEngine:
+            messages = []
+            total_usage = UsageSnapshot()
+
+            def set_system_prompt(self, prompt):
+                return None
+
+            async def submit_message(self, content):
+                # Round 1: text + tool call
+                yield AssistantTextDelta(text="让我看看")
+                yield AssistantTextDelta(text="这个文件")
+                yield AssistantTurnComplete(
+                    message=ConversationMessage(
+                        role="assistant",
+                        content=[
+                            TextBlock(text="让我看看这个文件"),
+                            ToolUseBlock(id="tu1", name="read_file", input={"path": "foo.py"}),
+                        ],
+                    ),
+                    usage=UsageSnapshot(),
+                )
+                yield ToolExecutionStarted(tool_name="read_file", tool_input={"path": "foo.py"})
+                # Round 2: final text only
+                yield AssistantTextDelta(text="结果是这样")
+                yield AssistantTurnComplete(
+                    message=ConversationMessage(
+                        role="assistant",
+                        content=[TextBlock(text="结果是这样")],
+                    ),
+                    usage=UsageSnapshot(),
+                )
+
+        return SimpleNamespace(
+            engine=FakeEngine(),
+            session_id="sess123",
+            current_settings=lambda: SimpleNamespace(model="gpt-5.4"),
+            commands=SimpleNamespace(lookup=lambda raw: None),
+        )
+
+    async def fake_start_runtime(bundle):
+        return None
+
+    monkeypatch.setattr("ohmo.gateway.runtime.build_runtime", fake_build_runtime)
+    monkeypatch.setattr("ohmo.gateway.runtime.start_runtime", fake_start_runtime)
+
+    pool = OhmoSessionRuntimePool(cwd=tmp_path, workspace=workspace, provider_profile="codex")
+    message = InboundMessage(channel="telegram", sender_id="u1", chat_id="c1", content="看看")
+    updates = [u async for u in pool.stream_message(message, "telegram:c1")]
+
+    kinds = [u.kind for u in updates]
+    # Pre-tool text should be flushed as text_progress
+    assert "text_progress" in kinds
+    text_progress = [u for u in updates if u.kind == "text_progress"][0]
+    assert "让我看看这个文件" in text_progress.text
+    assert text_progress.metadata.get("_progress") is True
+
+    # Pre-tool text should NOT appear in the final message
+    final = [u for u in updates if u.kind == "final"][0]
+    assert "让我看看" not in final.text
+    assert "结果是这样" in final.text
 
 
 @pytest.mark.asyncio

@@ -488,8 +488,25 @@ class OhmoSessionRuntimePool:
                 metadata={"_session_key": session_key},
             )
             return
-        if isinstance(event, AssistantTurnComplete) and not reply_parts:
-            reply_parts.append(event.message.text.strip())
+        if isinstance(event, AssistantTurnComplete):
+            # When the turn includes tool calls, any text the model produced
+            # before the tool call is buffered in reply_parts.  Flush it as a
+            # progress update so channels can display it (via draft in private
+            # chats, or as a standalone message in groups where draft is
+            # unavailable).  Clear reply_parts so the text does not reappear at
+            # the start of the final message.
+            if event.message.tool_uses:
+                accumulated = "".join(reply_parts).strip()
+                if accumulated:
+                    reply_parts.clear()
+                    yield GatewayStreamUpdate(
+                        kind="text_progress",
+                        text=accumulated,
+                        metadata={"_progress": True, "_session_key": session_key},
+                    )
+                return
+            if not reply_parts:
+                reply_parts.append(event.message.text.strip())
 
     async def _save_snapshot(self, bundle: RuntimeBundle, session_key: str, user_prompt: str) -> None:
         tool_metadata = getattr(bundle.engine, "tool_metadata", {}) or {}
