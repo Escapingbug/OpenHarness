@@ -437,6 +437,17 @@ class OhmoSessionRuntimePool:
                 event.tool_name,
                 summary,
             )
+            # ask_user_question: render the question as a user-facing message
+            # instead of a tool hint, so it displays properly in channels.
+            if event.tool_name == "ask_user_question" and summary:
+                prefers_chinese = _prefers_chinese_progress(content)
+                question_label = "❓ " + ("提问" if prefers_chinese else "Question") + "："
+                yield GatewayStreamUpdate(
+                    kind="ask_user",
+                    text=question_label + summary,
+                    metadata={"_session_key": session_key},
+                )
+                return
             hint = f"Using {event.tool_name}"
             if summary:
                 hint = f"{hint}: {summary}"
@@ -559,7 +570,12 @@ def _content_snippet(text: str, *, limit: int = 160) -> str:
 def _summarize_tool_input(tool_name: str, tool_input: dict[str, object]) -> str:
     if not tool_input:
         return ""
-    for key in ("url", "query", "pattern", "path", "file_path", "command"):
+    # For ask_user_question, return the full question text (never truncate)
+    if tool_name == "ask_user_question":
+        question = tool_input.get("question")
+        if isinstance(question, str) and question.strip():
+            return question.strip()
+    for key in ("url", "query", "pattern", "path", "file_path", "command", "question"):
         value = tool_input.get(key)
         if isinstance(value, str) and value.strip():
             text = value.strip()

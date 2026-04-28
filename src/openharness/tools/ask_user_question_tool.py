@@ -37,7 +37,11 @@ class AskUserQuestionTool(BaseTool):
         prompt = context.metadata.get("ask_user_prompt")
         if not callable(prompt):
             return ToolResult(
-                output="ask_user_question is unavailable in this session",
+                output=(
+                    "ask_user_question is not available in this channel session. "
+                    "Instead, ask your question directly in your response text — "
+                    "the user will see it and reply naturally."
+                ),
                 is_error=True,
             )
         answer = str(await prompt(arguments.question)).strip()
