@@ -17,6 +17,7 @@ from openharness.api.client import SupportsStreamingMessages
 from openharness.auth.manager import AuthManager
 from openharness.config.settings import CLAUDE_MODEL_ALIAS_OPTIONS, resolve_model_setting
 from openharness.bridge import get_bridge_manager
+from openharness.coordinator.coordinator_mode import is_coordinator_mode
 from openharness.themes import list_themes
 from openharness.engine.stream_events import (
     AssistantTextDelta,
@@ -30,6 +31,7 @@ from openharness.engine.stream_events import (
 )
 from openharness.output_styles import load_output_styles
 from openharness.tasks import get_task_manager
+from openharness.ui.coordinator_drain import drain_coordinator_async_agents
 from openharness.ui.protocol import BackendEvent, FrontendRequest, TranscriptItem
 from openharness.ui.runtime import build_runtime, close_runtime, handle_line, start_runtime
 from openharness.services.session_backend import SessionBackend
@@ -342,6 +344,13 @@ class ReactBackendHost:
             render_event=_render_event,
             clear_output=_clear_output,
         )
+        if is_coordinator_mode():
+            await drain_coordinator_async_agents(
+                self._bundle,
+                prompt_seed=line,
+                print_system=_print_system,
+                render_event=_render_event,
+            )
         await self._emit(self._status_snapshot())
         await self._emit(BackendEvent.tasks_snapshot(get_task_manager().list_tasks()))
         await self._emit(BackendEvent(type="line_complete"))
