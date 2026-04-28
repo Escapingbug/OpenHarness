@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 
 import pytest
@@ -121,3 +122,60 @@ async def test_telegram_registers_stop_command(monkeypatch):
         getattr(h, "kind", None) == "command" and not isinstance(getattr(h, "command", None), str)
         for h in registered_handlers
     ), "Catch-all command handler (filters.COMMAND) should be registered"
+
+
+def test_telegram_polling_watchdog_does_not_restart_on_idle_time():
+    channel = TelegramChannel(
+        TelegramConfig(token="token", allow_from=["*"], proxy=None, reply_to_message=False),
+        MessageBus(),
+    )
+    channel._app = SimpleNamespace(updater=SimpleNamespace(running=True))
+    channel._last_poll_activity = 1.0
+
+    assert channel._needs_polling_restart() is False
+
+
+@pytest.mark.asyncio
+async def test_telegram_polling_restart_failure_remains_retryable():
+    class FakeUpdater:
+        def __init__(self):
+            self.running = False
+            self.start_calls = 0
+            self.start_kwargs = None
+
+        async def start_polling(self, **kwargs):
+            self.start_calls += 1
+            self.start_kwargs = kwargs
+            raise RuntimeError("network failure")
+
+        async def stop(self):
+            self.running = False
+
+    updater = FakeUpdater()
+    channel = TelegramChannel(
+        TelegramConfig(token="token", allow_from=["*"], proxy=None, reply_to_message=False),
+        MessageBus(),
+    )
+    channel._app = SimpleNamespace(updater=updater)
+
+    with pytest.raises(RuntimeError, match="network failure"):
+        await channel._restart_polling()
+
+    assert updater.start_calls == 1
+    assert updater.start_kwargs["drop_pending_updates"] is False
+    assert channel._needs_polling_restart() is True
+
+
+@pytest.mark.asyncio
+async def test_telegram_polling_watchdog_restarts_finished_polling_task():
+    finished = asyncio.get_running_loop().create_future()
+    finished.set_result(None)
+    updater = SimpleNamespace(running=True)
+    setattr(updater, "_Updater__polling_task", finished)
+    channel = TelegramChannel(
+        TelegramConfig(token="token", allow_from=["*"], proxy=None, reply_to_message=False),
+        MessageBus(),
+    )
+    channel._app = SimpleNamespace(updater=updater)
+
+    assert channel._needs_polling_restart() is True

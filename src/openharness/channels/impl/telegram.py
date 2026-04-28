@@ -130,7 +130,6 @@ class TelegramChannel(BaseChannel):
         self._media_group_buffers: dict[str, dict] = {}
         self._media_group_tasks: dict[str, asyncio.Task] = {}
         self._last_poll_activity: float = 0.0
-        self._POLL_STALL_TIMEOUT: int = 60
 
     async def start(self) -> None:
         """Start the Telegram bot with long polling."""
@@ -205,30 +204,30 @@ class TelegramChannel(BaseChannel):
             logger.warning("Failed to register bot commands: %s", e)
 
         # Start polling (this runs until stopped)
-        await self._start_polling()
+        await self._start_polling(drop_pending_updates=True)
 
         # Keep running until stopped, with stall detection
         while self._running:
             await asyncio.sleep(5)
             if not self._running or not self._app:
                 break
-            if self._is_polling_stalled():
-                logger.warning("Polling stalled, restarting...")
+            if self._needs_polling_restart():
+                logger.warning("Polling is not running, restarting...")
                 try:
                     await self._restart_polling()
                 except Exception as e:
                     logger.error("Failed to restart polling: %s", e)
 
-    async def _start_polling(self) -> None:
+    async def _start_polling(self, *, drop_pending_updates: bool = False) -> None:
         """Start the updater's long-polling loop and record activity."""
         self._last_poll_activity = asyncio.get_event_loop().time()
         await self._app.updater.start_polling(
             allowed_updates=["message"],
-            drop_pending_updates=True,
+            drop_pending_updates=drop_pending_updates,
         )
 
     async def _restart_polling(self) -> None:
-        """Restart the polling loop after a stall."""
+        """Restart the polling loop after it has stopped."""
         if not self._app:
             return
         try:
@@ -236,18 +235,17 @@ class TelegramChannel(BaseChannel):
                 await self._app.updater.stop()
         except Exception as e:
             logger.warning("Error stopping stalled updater: %s", e)
-        await self._start_polling()
-        logger.info("Polling restarted after stall")
+        await self._start_polling(drop_pending_updates=False)
+        logger.info("Polling restarted")
 
-    def _is_polling_stalled(self) -> bool:
-        """Check if the polling task is dead or hung."""
-        if not self._app or not self._app.updater.running:
+    def _needs_polling_restart(self) -> bool:
+        """Check if the polling task has stopped and should be restarted."""
+        if not self._app:
             return False
+        if not self._app.updater.running:
+            return True
         polling_task = getattr(self._app.updater, "_Updater__polling_task", None)
         if polling_task is not None and polling_task.done():
-            return True
-        now = asyncio.get_event_loop().time()
-        if self._last_poll_activity > 0 and now - self._last_poll_activity > self._POLL_STALL_TIMEOUT:
             return True
         return False
 
