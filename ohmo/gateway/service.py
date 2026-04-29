@@ -38,6 +38,16 @@ logger = logging.getLogger(__name__)
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
+def _gateway_subprocess_env() -> dict[str, str]:
+    env = os.environ.copy()
+    pythonpath_entries = [str(_REPO_ROOT)]
+    existing_pythonpath = env.get("PYTHONPATH")
+    if existing_pythonpath:
+        pythonpath_entries.append(existing_pythonpath)
+    env["PYTHONPATH"] = os.pathsep.join(pythonpath_entries)
+    return env
+
+
 class OhmoGatewayService:
     """Foreground/background service wrapper for the personal gateway."""
 
@@ -165,6 +175,7 @@ class OhmoGatewayService:
             subprocess_popen(
                 argv,
                 cwd=self._cwd,
+                env=_gateway_subprocess_env(),
                 stdin=subprocess.DEVNULL,
                 stdout=log_file,
                 stderr=log_file,
@@ -251,17 +262,11 @@ def start_gateway_process(cwd: str | Path | None = None, workspace: str | Path |
     """Start the gateway as a detached subprocess."""
     service = OhmoGatewayService(cwd, workspace)
     service.log_file.parent.mkdir(parents=True, exist_ok=True)
-    env = os.environ.copy()
-    pythonpath_entries = [str(_REPO_ROOT)]
-    existing_pythonpath = env.get("PYTHONPATH")
-    if existing_pythonpath:
-        pythonpath_entries.append(existing_pythonpath)
-    env["PYTHONPATH"] = os.pathsep.join(pythonpath_entries)
 
     popen_kwargs: dict = {
         "stdout": None,
         "stderr": None,
-        "env": env,
+        "env": _gateway_subprocess_env(),
     }
     if sys.platform == "win32":
         popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS
