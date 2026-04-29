@@ -9,6 +9,8 @@ import shutil
 import sys
 from pathlib import Path
 
+from openharness.utils.shell import async_subprocess_exec
+
 
 def _resolve_theme() -> str:
     """Read the theme name from settings, defaulting to 'default'."""
@@ -131,7 +133,7 @@ async def launch_react_tui(
     npm = _resolve_npm()
 
     if not (frontend_dir / "node_modules").exists():
-        install = await asyncio.create_subprocess_exec(
+        install = await async_subprocess_exec(
             npm,
             "install",
             "--no-fund",
@@ -159,7 +161,7 @@ async def launch_react_tui(
         }
     )
     tsx_cmd = _resolve_tsx(frontend_dir)
-    process = await asyncio.create_subprocess_exec(
+    process = await async_subprocess_exec(
         *tsx_cmd,
         "src/index.tsx",
         cwd=str(frontend_dir),

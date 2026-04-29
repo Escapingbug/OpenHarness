@@ -12,7 +12,7 @@ from pathlib import Path
 from openharness.config import Settings
 from openharness.platforms import get_platform, get_platform_capabilities
 from openharness.sandbox.adapter import SandboxAvailability, SandboxUnavailableError
-from openharness.utils.shell import subprocess_run
+from openharness.utils.shell import async_subprocess_exec, subprocess_run
 
 logger = logging.getLogger(__name__)
 
@@ -145,7 +145,7 @@ class DockerSandboxSession:
         argv = self._build_run_argv()
         logger.info("Starting Docker sandbox: %s", " ".join(argv))
 
-        process = await asyncio.create_subprocess_exec(
+        process = await async_subprocess_exec(
             *argv,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
@@ -164,7 +164,7 @@ class DockerSandboxSession:
             return
         docker = shutil.which("docker") or "docker"
         try:
-            process = await asyncio.create_subprocess_exec(
+            process = await async_subprocess_exec(
                 docker,
                 "stop",
                 "-t",
@@ -225,7 +225,7 @@ class DockerSandboxSession:
         cmd.append(self._container_name)
         cmd.extend(argv)
 
-        return await asyncio.create_subprocess_exec(
+        return await async_subprocess_exec(
             *cmd,
             stdin=stdin,
             stdout=stdout,

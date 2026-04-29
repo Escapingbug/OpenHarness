@@ -10,6 +10,7 @@ from pathlib import Path
 from pydantic import BaseModel, Field
 
 from openharness.tools.base import BaseTool, ToolExecutionContext, ToolResult
+from openharness.utils.shell import async_subprocess_exec
 
 
 class GrepToolInput(BaseModel):
@@ -189,7 +190,7 @@ async def _rg_grep(
             stderr=asyncio.subprocess.DEVNULL,
         )
     else:
-        process = await asyncio.create_subprocess_exec(
+        process = await async_subprocess_exec(
             *cmd,
             cwd=str(root),
             stdout=asyncio.subprocess.PIPE,
@@ -257,7 +258,7 @@ async def _rg_grep_file(
             stderr=asyncio.subprocess.DEVNULL,
         )
     else:
-        process = await asyncio.create_subprocess_exec(
+        process = await async_subprocess_exec(
             *cmd,
             cwd=str(path.parent),
             stdout=asyncio.subprocess.PIPE,

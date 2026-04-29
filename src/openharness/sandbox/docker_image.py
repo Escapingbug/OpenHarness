@@ -7,6 +7,8 @@ import logging
 import shutil
 from pathlib import Path
 
+from openharness.utils.shell import async_subprocess_exec
+
 logger = logging.getLogger(__name__)
 
 _DEFAULT_IMAGE = "openharness-sandbox:latest"
@@ -29,7 +31,7 @@ def get_dockerfile_content() -> str:
 async def _image_exists(image: str) -> bool:
     """Check whether a Docker image exists locally."""
     docker = shutil.which("docker") or "docker"
-    process = await asyncio.create_subprocess_exec(
+    process = await async_subprocess_exec(
         docker,
         "image",
         "inspect",
@@ -58,13 +60,13 @@ async def build_default_image(image: str = _DEFAULT_IMAGE) -> bool:
     logger.info("Building Docker sandbox image %r ...", image)
 
     if dockerfile_path.exists():
-        process = await asyncio.create_subprocess_exec(
+        process = await async_subprocess_exec(
             *cmd,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
     else:
-        process = await asyncio.create_subprocess_exec(
+        process = await async_subprocess_exec(
             *cmd,
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,

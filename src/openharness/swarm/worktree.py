@@ -9,6 +9,8 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+from openharness.utils.shell import async_subprocess_exec
+
 # ---------------------------------------------------------------------------
 # Slug validation
 # ---------------------------------------------------------------------------
@@ -86,7 +88,7 @@ def _worktree_branch(slug: str) -> str:
 
 async def _run_git(*args: str, cwd: Path) -> tuple[int, str, str]:
     """Run a git command, returning (returncode, stdout, stderr)."""
-    proc = await asyncio.create_subprocess_exec(
+    proc = await async_subprocess_exec(
         "git",
         *args,
         cwd=str(cwd),

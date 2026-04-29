@@ -11,6 +11,7 @@ from pathlib import Path
 from openharness.api.client import SupportsStreamingMessages
 from openharness.engine.stream_events import AssistantTextDelta, AssistantTurnComplete, CompactProgressEvent, ErrorEvent, StatusEvent
 from openharness.ui.backend_host import run_backend_host
+from openharness.utils.shell import async_subprocess_exec
 from openharness.ui.runtime import build_runtime, close_runtime, handle_line, start_runtime
 from openharness.ui.react_launcher import _resolve_npm, _resolve_tsx, get_frontend_dir
 
@@ -96,7 +97,7 @@ async def launch_ohmo_react_tui(
 
     npm = _resolve_npm()
     if not (frontend_dir / "node_modules").exists():
-        install = await asyncio.create_subprocess_exec(
+        install = await async_subprocess_exec(
             npm,
             "install",
             "--no-fund",
@@ -123,7 +124,7 @@ async def launch_ohmo_react_tui(
         }
     )
     tsx_cmd = _resolve_tsx(frontend_dir)
-    process = await asyncio.create_subprocess_exec(
+    process = await async_subprocess_exec(
         *tsx_cmd,
         "src/index.tsx",
         cwd=str(frontend_dir),

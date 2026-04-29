@@ -9,6 +9,7 @@ from pathlib import Path
 from pydantic import AliasChoices, BaseModel, Field
 
 from openharness.tools.base import BaseTool, ToolExecutionContext, ToolResult
+from openharness.utils.shell import async_subprocess_exec
 
 
 class GlobToolInput(BaseModel):
@@ -95,7 +96,7 @@ async def _glob(root: Path, pattern: str, *, limit: int) -> list[str]:
                 stderr=asyncio.subprocess.DEVNULL,
             )
         else:
-            process = await asyncio.create_subprocess_exec(
+            process = await async_subprocess_exec(
                 *cmd,
                 cwd=str(root),
                 stdout=asyncio.subprocess.PIPE,
