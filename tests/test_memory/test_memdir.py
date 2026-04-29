@@ -25,6 +25,83 @@ def test_memory_paths_are_stable(tmp_path: Path, monkeypatch):
     assert entrypoint.parent == memory_dir
 
 
+def test_memory_dir_uses_project_name(tmp_path: Path, monkeypatch):
+    """Memory directory name should be the project directory name, not a hash."""
+    monkeypatch.setenv("OPENHARNESS_DATA_DIR", str(tmp_path / "data"))
+    project_dir = tmp_path / "my-project"
+    project_dir.mkdir()
+
+    memory_dir = get_project_memory_dir(project_dir)
+
+    assert memory_dir.name == "my-project"
+    assert memory_dir.exists()
+
+
+def test_memory_dir_same_name_same_result(tmp_path: Path, monkeypatch):
+    """Different paths with the same directory name resolve to the same memory dir."""
+    monkeypatch.setenv("OPENHARNESS_DATA_DIR", str(tmp_path / "data"))
+    dir_a = tmp_path / "path-a" / "project"
+    dir_b = tmp_path / "path-b" / "project"
+    dir_a.mkdir(parents=True)
+    dir_b.mkdir(parents=True)
+
+    mem_a = get_project_memory_dir(dir_a)
+    mem_b = get_project_memory_dir(dir_b)
+
+    assert mem_a == mem_b
+
+
+def test_memory_dir_migrates_legacy_hash_dir(tmp_path: Path, monkeypatch):
+    """Legacy {name}-{hex12} directories should be auto-migrated to {name}."""
+    monkeypatch.setenv("OPENHARNESS_DATA_DIR", str(tmp_path / "data"))
+    data_dir = tmp_path / "data"
+    memory_base = data_dir / "memory"
+    memory_base.mkdir(parents=True)
+
+    # Create a legacy-style directory with some content.
+    legacy_dir = memory_base / "myproject-a1b2c3d4e5f6"
+    legacy_dir.mkdir()
+    (legacy_dir / "notes.md").write_text("Important notes\n", encoding="utf-8")
+    (legacy_dir / "MEMORY.md").write_text("# Index\n- [notes](notes.md)\n", encoding="utf-8")
+
+    project_dir = tmp_path / "myproject"
+    project_dir.mkdir()
+
+    memory_dir = get_project_memory_dir(project_dir)
+
+    assert memory_dir.name == "myproject"
+    assert (memory_dir / "notes.md").exists()
+    assert (memory_dir / "notes.md").read_text(encoding="utf-8") == "Important notes\n"
+    assert not legacy_dir.exists()
+
+
+def test_memory_dir_no_migration_when_new_dir_exists(tmp_path: Path, monkeypatch):
+    """If the new-style directory already exists, legacy dirs are left alone."""
+    monkeypatch.setenv("OPENHARNESS_DATA_DIR", str(tmp_path / "data"))
+    data_dir = tmp_path / "data"
+    memory_base = data_dir / "memory"
+    memory_base.mkdir(parents=True)
+
+    # Create both new-style and legacy directories.
+    new_dir = memory_base / "myproject"
+    new_dir.mkdir()
+    (new_dir / "current.md").write_text("Current content\n", encoding="utf-8")
+
+    legacy_dir = memory_base / "myproject-a1b2c3d4e5f6"
+    legacy_dir.mkdir()
+    (legacy_dir / "old.md").write_text("Old content\n", encoding="utf-8")
+
+    project_dir = tmp_path / "myproject"
+    project_dir.mkdir()
+
+    memory_dir = get_project_memory_dir(project_dir)
+
+    assert memory_dir.name == "myproject"
+    assert (memory_dir / "current.md").exists()
+    # Legacy dir is untouched since new dir already existed.
+    assert legacy_dir.exists()
+
+
 def test_load_memory_prompt_includes_entrypoint(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("OPENHARNESS_DATA_DIR", str(tmp_path / "data"))
     project_dir = tmp_path / "repo"
