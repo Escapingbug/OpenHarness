@@ -2156,6 +2156,12 @@ def main(
         help="Comma or space-separated list of tool names to deny",
         rich_help_panel="Permissions",
     ),
+    allowed_subagents: Optional[list[str]] = typer.Option(
+        None,
+        "--allowed-subagents",
+        help="Comma or space-separated list of subagent types this agent may spawn",
+        rich_help_panel="Permissions",
+    ),
     # --- System & Context ---
     system_prompt: str | None = typer.Option(
         None,
@@ -2364,6 +2370,9 @@ def main(
                 restore_tool_metadata=session_data.get("tool_metadata"),
                 permission_mode=permission_mode,
                 api_format=api_format,
+                allowed_tools=allowed_tools,
+                disallowed_tools=disallowed_tools,
+                allowed_subagents=allowed_subagents,
             )
         )
         return
@@ -2386,6 +2395,9 @@ def main(
                 api_format=api_format,
                 permission_mode=permission_mode,
                 max_turns=max_turns,
+                allowed_tools=allowed_tools,
+                disallowed_tools=disallowed_tools,
+                allowed_subagents=allowed_subagents,
             )
         )
         return
@@ -2401,6 +2413,9 @@ def main(
                 api_key=api_key,
                 api_format=api_format,
                 permission_mode=permission_mode,
+                allowed_tools=allowed_tools,
+                disallowed_tools=disallowed_tools,
+                allowed_subagents=allowed_subagents,
             )
         )
         return
@@ -2417,5 +2432,8 @@ def main(
             api_key=api_key,
             api_format=api_format,
             permission_mode=permission_mode,
+            allowed_tools=allowed_tools,
+            disallowed_tools=disallowed_tools,
+            allowed_subagents=allowed_subagents,
         )
     )

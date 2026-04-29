@@ -49,6 +49,17 @@ class AgentTool(BaseTool):
                 is_error=True,
             )
 
+        # Check allowed_subagents restriction from the current agent's context
+        current_allowed_subagents = context.metadata.get("allowed_subagents")
+        if current_allowed_subagents is not None:
+            target_type = arguments.subagent_type or "general-purpose"
+            if target_type not in current_allowed_subagents:
+                return ToolResult(
+                    output=f"This agent is not allowed to spawn subagent type '{target_type}'. "
+                    f"Allowed types: {', '.join(current_allowed_subagents)}",
+                    is_error=True,
+                )
+
         # Look up agent definition if subagent_type is specified
         agent_def = None
         if arguments.subagent_type:
@@ -75,6 +86,9 @@ class AgentTool(BaseTool):
             command=arguments.command,
             system_prompt=agent_def.system_prompt if agent_def else None,
             permissions=agent_def.permissions if agent_def else [],
+            allowed_tools=agent_def.tools if agent_def else None,
+            disallowed_tools=agent_def.disallowed_tools if agent_def else None,
+            allowed_subagents=agent_def.allowed_subagents if agent_def else None,
             task_type=arguments.mode,
         )
 

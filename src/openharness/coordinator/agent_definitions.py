@@ -93,6 +93,7 @@ class AgentDefinition(BaseModel):
     system_prompt: str | None = None
     tools: list[str] | None = None  # None means all tools allowed; ['*'] is equivalent
     disallowed_tools: list[str] | None = None
+    allowed_subagents: list[str] | None = None  # None means all subagent types allowed
 
     # --- model & effort ---
     model: str | None = None  # model override; None means inherit default
@@ -752,6 +753,12 @@ def load_agents_dir(directory: Path) -> list[AgentDefinition]:
             )
             disallowed_tools = _parse_str_list(disallowed_raw)
 
+            # --- allowed subagents ---
+            allowed_subagents_raw = frontmatter.get(
+                "allowedSubagents", frontmatter.get("allowed_subagents")
+            )
+            allowed_subagents = _parse_str_list(allowed_subagents_raw)
+
             # --- model ---
             model_raw = frontmatter.get("model")
             model: str | None = None
@@ -863,6 +870,7 @@ def load_agents_dir(directory: Path) -> list[AgentDefinition]:
                     system_prompt=body or None,
                     tools=tools,
                     disallowed_tools=disallowed_tools,
+                    allowed_subagents=allowed_subagents,
                     model=model,
                     effort=effort,
                     permission_mode=permission_mode,
@@ -903,15 +911,16 @@ def _get_user_agents_dir() -> Path:
 
 
 def get_all_agent_definitions() -> list[AgentDefinition]:
-    """Return all agent definitions: built-in + user + plugin.
+    """Return all agent definitions: built-in + user + project + plugin.
 
     Merge order (last writer wins for same ``name``):
     1. Built-in agents
     2. User agents (~/.openharness/agents/)
-    3. Plugin agents (loaded from active plugins)
+    3. Project agents (<cwd>/.openharness/agents/)
+    4. Plugin agents (loaded from active plugins)
 
-    User definitions override built-ins with the same name; plugin definitions
-    override user definitions with the same name.
+    User definitions override built-ins with the same name; project definitions
+    override user definitions; plugin definitions override everything.
     """
     agent_map: dict[str, AgentDefinition] = {}
 
@@ -923,6 +932,13 @@ def get_all_agent_definitions() -> list[AgentDefinition]:
     user_agents = load_agents_dir(_get_user_agents_dir())
     for agent in user_agents:
         agent_map[agent.name] = agent
+
+    # 3. Project-level agents (<cwd>/.openharness/agents/)
+    project_agents_dir = Path.cwd() / ".openharness" / "agents"
+    if project_agents_dir.is_dir():
+        project_agents = load_agents_dir(project_agents_dir)
+        for agent in project_agents:
+            agent_map[agent.name] = agent
 
     # 3. Plugin agents — loaded lazily to avoid import cycles
     try:

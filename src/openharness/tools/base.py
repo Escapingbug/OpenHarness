@@ -75,6 +75,30 @@ class ToolRegistry:
         """Return all registered tools."""
         return list(self._tools.values())
 
+    def filtered_view(
+        self,
+        *,
+        allow: list[str] | None = None,
+        deny: list[str] | None = None,
+    ) -> ToolRegistry:
+        """Return a new registry containing only the allowed tools.
+
+        Args:
+            allow: Whitelist of tool names.  ``None`` means "all tools".
+            deny: Blacklist of tool names.  Applied after the whitelist.
+
+        Returns:
+            A new ``ToolRegistry`` with the filtered tool set.
+        """
+        view = ToolRegistry()
+        for name, tool in self._tools.items():
+            if deny and name in deny:
+                continue
+            if allow is not None and name not in allow:
+                continue
+            view.register(tool)
+        return view
+
     def to_api_schema(self) -> list[dict[str, Any]]:
         """Return all tool schemas in API format."""
         return [tool.to_api_schema() for tool in self._tools.values()]

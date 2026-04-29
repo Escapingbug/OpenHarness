@@ -294,6 +294,15 @@ class TeammateSpawnConfig:
     permissions: list[str] = field(default_factory=list)
     """Tool permissions to grant this teammate."""
 
+    allowed_tools: list[str] | None = None
+    """Whitelist of tool names.  None means all tools."""
+
+    disallowed_tools: list[str] | None = None
+    """Blacklist of tool names.  Applied after allowed_tools."""
+
+    allowed_subagents: list[str] | None = None
+    """Whitelist of subagent types this teammate may spawn.  None means all."""
+
     plan_mode_required: bool = False
     """Whether this teammate must enter plan mode before implementing."""
 

@@ -52,6 +52,9 @@ async def run_repl(
     restore_messages: list[dict] | None = None,
     restore_tool_metadata: dict[str, object] | None = None,
     permission_mode: str | None = None,
+    allowed_tools: list[str] | None = None,
+    disallowed_tools: list[str] | None = None,
+    allowed_subagents: list[str] | None = None,
 ) -> None:
     """Run the default OpenHarness interactive application (React TUI)."""
     if backend_only:
@@ -68,6 +71,9 @@ async def run_repl(
             restore_tool_metadata=restore_tool_metadata,
             enforce_max_turns=max_turns is not None,
             permission_mode=permission_mode,
+            allowed_tools=allowed_tools,
+            disallowed_tools=disallowed_tools,
+            allowed_subagents=allowed_subagents,
         )
         return
 
@@ -97,6 +103,9 @@ async def run_task_worker(
     api_format: str | None = None,
     api_client: SupportsStreamingMessages | None = None,
     permission_mode: str | None = None,
+    allowed_tools: list[str] | None = None,
+    disallowed_tools: list[str] | None = None,
+    allowed_subagents: list[str] | None = None,
 ) -> None:
     """Run a stdin-driven headless worker for background agent tasks.
 
@@ -144,6 +153,9 @@ async def run_task_worker(
         ask_user_prompt=_noop_ask,
         enforce_max_turns=max_turns is not None,
         permission_mode=permission_mode,
+        allowed_tools=allowed_tools,
+        disallowed_tools=disallowed_tools,
+        allowed_subagents=allowed_subagents,
     )
     await start_runtime(bundle)
     try:
@@ -183,6 +195,9 @@ async def run_print_mode(
     api_client: SupportsStreamingMessages | None = None,
     permission_mode: str | None = None,
     max_turns: int | None = None,
+    allowed_tools: list[str] | None = None,
+    disallowed_tools: list[str] | None = None,
+    allowed_subagents: list[str] | None = None,
 ) -> None:
     """Non-interactive mode: submit prompt, stream output, exit."""
     from openharness.engine.stream_events import (
@@ -214,6 +229,9 @@ async def run_print_mode(
         api_client=api_client,
         permission_prompt=_noop_permission,
         ask_user_prompt=_noop_ask,
+        allowed_tools=allowed_tools,
+        disallowed_tools=disallowed_tools,
+        allowed_subagents=allowed_subagents,
     )
     await start_runtime(bundle)
 

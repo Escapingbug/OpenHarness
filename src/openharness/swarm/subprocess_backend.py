@@ -57,6 +57,9 @@ class SubprocessBackend:
             system_prompt=config.system_prompt,
             system_prompt_mode=config.system_prompt_mode,
             plan_mode_required=config.plan_mode_required,
+            allowed_tools=config.allowed_tools,
+            disallowed_tools=config.disallowed_tools,
+            allowed_subagents=config.allowed_subagents,
         )
         extra_env = build_inherited_env_vars()
 

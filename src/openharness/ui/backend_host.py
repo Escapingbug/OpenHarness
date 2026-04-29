@@ -63,6 +63,9 @@ class BackendHostConfig:
     session_backend: SessionBackend | None = None
     extra_skill_dirs: tuple[str, ...] = ()
     extra_plugin_roots: tuple[str, ...] = ()
+    allowed_tools: list[str] | None = None
+    disallowed_tools: list[str] | None = None
+    allowed_subagents: list[str] | None = None
 
 
 class ReactBackendHost:
@@ -102,6 +105,9 @@ class ReactBackendHost:
             session_backend=self._config.session_backend,
             extra_skill_dirs=self._config.extra_skill_dirs,
             extra_plugin_roots=self._config.extra_plugin_roots,
+            allowed_tools=self._config.allowed_tools,
+            disallowed_tools=self._config.disallowed_tools,
+            allowed_subagents=self._config.allowed_subagents,
         )
         await start_runtime(self._bundle)
         await self._emit(
@@ -800,6 +806,9 @@ async def run_backend_host(
     session_backend: SessionBackend | None = None,
     extra_skill_dirs: tuple[str | Path, ...] = (),
     extra_plugin_roots: tuple[str | Path, ...] = (),
+    allowed_tools: list[str] | None = None,
+    disallowed_tools: list[str] | None = None,
+    allowed_subagents: list[str] | None = None,
 ) -> int:
     """Run the structured React backend host."""
     if cwd:
@@ -822,6 +831,9 @@ async def run_backend_host(
             session_backend=session_backend,
             extra_skill_dirs=tuple(str(Path(path).expanduser().resolve()) for path in extra_skill_dirs),
             extra_plugin_roots=tuple(str(Path(path).expanduser().resolve()) for path in extra_plugin_roots),
+            allowed_tools=allowed_tools,
+            disallowed_tools=disallowed_tools,
+            allowed_subagents=allowed_subagents,
         )
     )
     return await host.run()

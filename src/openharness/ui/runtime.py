@@ -188,6 +188,9 @@ async def build_runtime(
     permission_mode: str | None = None,
     extra_skill_dirs: Iterable[str | Path] | None = None,
     extra_plugin_roots: Iterable[str | Path] | None = None,
+    allowed_tools: list[str] | None = None,
+    disallowed_tools: list[str] | None = None,
+    allowed_subagents: list[str] | None = None,
 ) -> RuntimeBundle:
     """Build the shared runtime for an OpenHarness session."""
     settings_overrides: dict[str, Any] = {
@@ -217,6 +220,16 @@ async def build_runtime(
         if plugin.enabled and plugin.tools:
             for tool in plugin.tools:
                 tool_registry.register(tool)
+    # Apply tool restrictions from agent definition / CLI flags
+    if allowed_tools is not None or disallowed_tools:
+        tool_registry = tool_registry.filtered_view(
+            allow=allowed_tools,
+            deny=disallowed_tools,
+        )
+    # Apply tool restrictions to PermissionSettings as well for defence-in-depth
+    if allowed_tools is not None or disallowed_tools:
+        settings.permission.allowed_tools = allowed_tools or []
+        settings.permission.denied_tools = disallowed_tools or []
     provider = detect_provider(settings)
     bridge_manager = get_bridge_manager()
     app_state = AppStateStore(
@@ -309,6 +322,7 @@ async def build_runtime(
             "extra_skill_dirs": normalized_skill_dirs,
             "extra_plugin_roots": normalized_plugin_roots,
             "session_id": session_id,
+            "allowed_subagents": allowed_subagents,
             **restored_metadata,
         },
     )
