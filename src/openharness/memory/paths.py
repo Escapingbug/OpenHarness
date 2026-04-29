@@ -30,7 +30,9 @@ def get_project_memory_dir(cwd: str | Path) -> Path:
 
     # --- Legacy migration ---
     # Find and migrate any old-style directory that matches this project.
-    if not new_dir.exists():
+    # Also migrate if new_dir exists but is empty (e.g. created by an earlier
+    # partial migration or mkdir call) while legacy content remains.
+    if not new_dir.exists() or not any(new_dir.iterdir()):
         _migrate_legacy_dir(path.name, new_dir)
 
     new_dir.mkdir(parents=True, exist_ok=True)

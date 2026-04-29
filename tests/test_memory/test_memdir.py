@@ -75,14 +75,14 @@ def test_memory_dir_migrates_legacy_hash_dir(tmp_path: Path, monkeypatch):
     assert not legacy_dir.exists()
 
 
-def test_memory_dir_no_migration_when_new_dir_exists(tmp_path: Path, monkeypatch):
-    """If the new-style directory already exists, legacy dirs are left alone."""
+def test_memory_dir_no_migration_when_new_dir_has_content(tmp_path: Path, monkeypatch):
+    """If the new-style directory already has content, legacy dirs are left alone."""
     monkeypatch.setenv("OPENHARNESS_DATA_DIR", str(tmp_path / "data"))
     data_dir = tmp_path / "data"
     memory_base = data_dir / "memory"
     memory_base.mkdir(parents=True)
 
-    # Create both new-style and legacy directories.
+    # Create both new-style (with content) and legacy directories.
     new_dir = memory_base / "myproject"
     new_dir.mkdir()
     (new_dir / "current.md").write_text("Current content\n", encoding="utf-8")
@@ -98,8 +98,33 @@ def test_memory_dir_no_migration_when_new_dir_exists(tmp_path: Path, monkeypatch
 
     assert memory_dir.name == "myproject"
     assert (memory_dir / "current.md").exists()
-    # Legacy dir is untouched since new dir already existed.
+    # Legacy dir is untouched since new dir already had content.
     assert legacy_dir.exists()
+
+
+def test_memory_dir_migrates_when_new_dir_is_empty(tmp_path: Path, monkeypatch):
+    """If the new-style directory exists but is empty, legacy content is merged in."""
+    monkeypatch.setenv("OPENHARNESS_DATA_DIR", str(tmp_path / "data"))
+    data_dir = tmp_path / "data"
+    memory_base = data_dir / "memory"
+    memory_base.mkdir(parents=True)
+
+    # Create empty new-style directory and a legacy directory with content.
+    new_dir = memory_base / "myproject"
+    new_dir.mkdir()
+
+    legacy_dir = memory_base / "myproject-a1b2c3d4e5f6"
+    legacy_dir.mkdir()
+    (legacy_dir / "notes.md").write_text("Important notes\n", encoding="utf-8")
+
+    project_dir = tmp_path / "myproject"
+    project_dir.mkdir()
+
+    memory_dir = get_project_memory_dir(project_dir)
+
+    assert memory_dir.name == "myproject"
+    assert (memory_dir / "notes.md").exists()
+    assert (memory_dir / "notes.md").read_text(encoding="utf-8") == "Important notes\n"
 
 
 def test_load_memory_prompt_includes_entrypoint(tmp_path: Path, monkeypatch):
