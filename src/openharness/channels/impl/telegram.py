@@ -31,22 +31,31 @@ logger = logging.getLogger(__name__)
 TELEGRAM_MAX_UTF16_LEN = 4000
 
 # Regex to extract Markdown tables from raw content (before convert()).
-# Matches lines starting with | and containing the separator row (---).
+# Matches a table block: header row(s), separator row (---), and data rows.
 _TABLE_BLOCK_RE = re.compile(
-    r"(?:^[ \t]*\|.+\|[ \t]*$\n)+"  # one or more table rows
-    r"(?=^[ \t]*\|[-: |]+\|[ \t]*$\n)"  # lookahead: separator row
-    r"(?:^[ \t]*\|.+\|[ \t]*$\n)*"  # more data rows after separator
-    r"(?:^[ \t]*\|.+\|[ \t]*$)",  # final row
+    r"(?:^[ \t]*\|[^\n]+\|[ \t]*$\n)+"  # header rows
+    r"^[ \t]*\|[-: \t|]+\|[ \t]*$\n"  # separator row
+    r"(?:^[ \t]*\|[^\n]+\|[ \t]*$\n?)*",  # data rows (optional trailing newline)
     re.MULTILINE,
 )
 
 
-def _extract_table_blocks(markdown: str) -> list[str]:
-    """Extract all Markdown table blocks from raw content.
+def _split_by_tables(markdown: str) -> list[tuple[str, str]]:
+    """Split markdown into ordered segments: text blocks and table blocks.
 
-    Returns a list of table markdown strings (preserving original text).
+    Returns a list of (kind, content) tuples where kind is 'text' or 'table'.
     """
-    return [m.group(0) for m in _TABLE_BLOCK_RE.finditer(markdown)]
+    segments: list[tuple[str, str]] = []
+    cursor = 0
+    for m in _TABLE_BLOCK_RE.finditer(markdown):
+        start, end = m.span()
+        if start > cursor:
+            segments.append(("text", markdown[cursor:start]))
+        segments.append(("table", m.group(0)))
+        cursor = end
+    if cursor < len(markdown):
+        segments.append(("text", markdown[cursor:]))
+    return segments
 
 
 class TelegramChannel(BaseChannel):
@@ -315,63 +324,63 @@ class TelegramChannel(BaseChannel):
             use_draft = is_progress and draft_id and chat_id > 0
             reply_markup = self._permission_reply_markup(msg.metadata)
 
-            # Render Markdown tables as images and send before the text message.
-            # Users can then read the image on mobile and copy from the pre block.
+            # Split content into text and table blocks so tables can be sent
+            # as images in-place, preserving the original reading order.
             if not is_progress:
-                table_blocks = _extract_table_blocks(msg.content)
-                if table_blocks:
-                    await self._send_table_images(table_blocks, chat_id, thread_id, reply_params)
+                segments = _split_by_tables(msg.content)
+            else:
+                segments = [("text", msg.content)]
 
-            try:
-                text, entities = convert(msg.content)
-                tg_entities = [TGMessageEntity.de_json(e.to_dict(), None) for e in entities]
-            except Exception:
-                logger.warning("telegramify-markdown convert failed, sending raw text", exc_info=True)
-                text = msg.content
-                tg_entities = []
+            for seg_index, (seg_kind, seg_content) in enumerate(segments):
+                if seg_kind == "table":
+                    await self._send_table_images(
+                        [seg_content], chat_id, thread_id, reply_params,
+                    )
+                    continue
 
-            chunks = split_entities(text, tg_entities, max_utf16_len=TELEGRAM_MAX_UTF16_LEN) if tg_entities else [(text, [])]
-
-            for index, (chunk_text, chunk_entities) in enumerate(chunks):
-                chunk_reply_markup = reply_markup if index == 0 and not use_draft else None
+                # Text block — convert and send as usual
                 try:
-                    if use_draft:
-                        await self._app.bot.send_message_draft(
-                            chat_id=chat_id,
-                            draft_id=draft_id,
-                            text=chunk_text,
-                            message_thread_id=thread_id,
-                            entities=chunk_entities or None,
-                        )
-                    else:
-                        await self._app.bot.send_message(
-                            chat_id=chat_id,
-                            text=chunk_text,
-                            message_thread_id=thread_id,
-                            entities=chunk_entities or None,
-                            reply_parameters=reply_params,
-                            reply_markup=chunk_reply_markup,
-                        )
-                except Exception as e:
-                    logger.warning("Entity send failed, falling back to plain text: %s", e)
+                    text, entities = convert(seg_content)
+                    tg_entities = [TGMessageEntity.de_json(e.to_dict(), None) for e in entities]
+                except Exception:
+                    logger.warning("telegramify-markdown convert failed, sending raw text", exc_info=True)
+                    text = seg_content
+                    tg_entities = []
+
+                chunks = split_entities(text, tg_entities, max_utf16_len=TELEGRAM_MAX_UTF16_LEN) if tg_entities else [(text, [])]
+
+                for index, (chunk_text, chunk_entities) in enumerate(chunks):
+                    # Only attach reply_markup and use draft for the very first chunk
+                    chunk_reply_markup = reply_markup if seg_index == 0 and index == 0 and not use_draft else None
                     try:
-                        if use_draft:
+                        if use_draft and seg_index == 0 and index == 0:
                             await self._app.bot.send_message_draft(
                                 chat_id=chat_id,
                                 draft_id=draft_id,
-                                message_thread_id=thread_id,
                                 text=chunk_text,
+                                message_thread_id=thread_id,
+                                entities=chunk_entities or None,
                             )
                         else:
                             await self._app.bot.send_message(
                                 chat_id=chat_id,
                                 text=chunk_text,
                                 message_thread_id=thread_id,
+                                entities=chunk_entities or None,
                                 reply_parameters=reply_params,
                                 reply_markup=chunk_reply_markup,
                             )
-                    except Exception as e2:
-                        logger.error("Error sending Telegram message: %s", e2)
+                    except Exception as e:
+                        logger.warning("Entity send failed, falling back to plain text: %s", e)
+                        try:
+                            await self._app.bot.send_message(
+                                chat_id=chat_id,
+                                text=chunk_text,
+                                message_thread_id=thread_id,
+                                reply_parameters=reply_params,
+                            )
+                        except Exception as e2:
+                            logger.error("Error sending Telegram message: %s", e2)
 
     @staticmethod
     def _permission_reply_markup(metadata: dict) -> InlineKeyboardMarkup | None:

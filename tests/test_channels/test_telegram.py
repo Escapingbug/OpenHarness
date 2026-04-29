@@ -256,3 +256,98 @@ async def test_telegram_polling_watchdog_restarts_finished_polling_task():
     channel._app = SimpleNamespace(updater=updater)
 
     assert channel._needs_polling_restart() is True
+
+
+def test_split_by_tables_basic():
+    md = """Intro text
+
+| Name | Type |
+|------|------|
+| CWE-78 | Injection |
+| CWE-89 | SQL |
+
+Middle text
+
+| A | B |
+|---|---|
+| 1 | 2 |
+
+Outro text"""
+
+    segments = telegram_mod._split_by_tables(md)
+    kinds = [k for k, _ in segments]
+    assert kinds == ["text", "table", "text", "table", "text"]
+
+    # Verify table contents are preserved
+    tables = [c for k, c in segments if k == "table"]
+    assert "| CWE-78 | Injection |" in tables[0]
+    assert "| A | B |" in tables[1]
+
+
+def test_split_by_tables_no_tables():
+    md = "Just some text without any tables."
+    segments = telegram_mod._split_by_tables(md)
+    assert segments == [("text", md)]
+
+
+def test_split_by_tables_only_table():
+    md = "| Header |\n|--------|\n| Value  |"
+    segments = telegram_mod._split_by_tables(md)
+    assert segments == [("table", md)]
+
+
+def test_split_by_tables_code_block_with_pipes_not_matched():
+    md = """Some text
+
+```bash
+cat file.txt | grep pattern | sort
+```
+
+More text"""
+
+    segments = telegram_mod._split_by_tables(md)
+    assert len(segments) == 1
+    assert segments[0][0] == "text"
+
+
+@pytest.mark.asyncio
+async def test_telegram_send_splits_tables_into_separate_messages(monkeypatch):
+    """Table blocks should be sent as images interleaved with text messages."""
+    sent_messages: list[dict] = []
+    sent_photos: list[dict] = []
+
+    class FakeBot:
+        async def send_message(self, **kwargs):
+            sent_messages.append(kwargs)
+
+        async def send_photo(self, **kwargs):
+            sent_photos.append(kwargs)
+
+    channel = TelegramChannel(
+        TelegramConfig(token="token", allow_from=["*"], proxy=None, reply_to_message=False),
+        MessageBus(),
+    )
+    channel._app = SimpleNamespace(bot=FakeBot())
+
+    # Mock md2png-lite to avoid actual image rendering
+    fake_md2png = SimpleNamespace(
+        render_markdown_image=lambda table_md, theme=None: {"ok": True, "base64": "iVBORw0KGgo="}
+    )
+    monkeypatch.setitem(__import__("sys").modules, "md2png_lite", fake_md2png)
+
+    from openharness.channels.bus.events import OutboundMessage
+
+    await channel.send(
+        OutboundMessage(
+            channel="telegram",
+            chat_id="123",
+            content="Before table\n\n| Name | Type |\n|------|------|\n| A | B |\n\nAfter table",
+        )
+    )
+
+    # Should have: text message, photo, text message
+    assert len(sent_messages) == 2, f"Expected 2 text messages, got {len(sent_messages)}"
+    assert len(sent_photos) == 1, f"Expected 1 photo, got {len(sent_photos)}"
+
+    assert "Before table" in sent_messages[0]["text"]
+    assert "After table" in sent_messages[1]["text"]
