@@ -58,6 +58,44 @@ class McpClientManager:
                     detail=f"Unsupported MCP transport in current build: {config.type}",
                 )
 
+    async def add_and_connect(self, name: str, config: object) -> McpConnectionStatus:
+        """Add a new server config, connect it, and return the resulting status."""
+        # If a server with this name already exists, close its connection first.
+        old_stack = self._stacks.pop(name, None)
+        if old_stack is not None:
+            with contextlib.suppress(RuntimeError, asyncio.CancelledError):
+                await old_stack.aclose()
+            self._sessions.pop(name, None)
+
+        self._server_configs[name] = config
+        self._statuses[name] = McpConnectionStatus(
+            name=name,
+            state="pending",
+            transport=getattr(config, "type", "unknown"),
+        )
+        if isinstance(config, McpStdioServerConfig):
+            await self._connect_stdio(name, config)
+        elif isinstance(config, McpHttpServerConfig):
+            await self._connect_http(name, config)
+        else:
+            self._statuses[name] = McpConnectionStatus(
+                name=name,
+                state="failed",
+                transport=getattr(config, "type", "unknown"),
+                detail=f"Unsupported MCP transport: {config.type}",
+            )
+        return self._statuses[name]
+
+    async def remove_server(self, name: str) -> None:
+        """Disconnect and remove a server from the manager."""
+        stack = self._stacks.pop(name, None)
+        if stack is not None:
+            with contextlib.suppress(RuntimeError, asyncio.CancelledError):
+                await stack.aclose()
+        self._sessions.pop(name, None)
+        self._server_configs.pop(name, None)
+        self._statuses.pop(name, None)
+
     async def reconnect_all(self) -> None:
         """Reconnect all configured servers."""
         await self.close()
