@@ -177,9 +177,14 @@ class OhmoGatewayBridge:
         }
         try:
             reply = ""
+            final_media: list[str] = []
             async for update in self._runtime_pool.stream_message(message, session_key):
                 if update.kind == "final":
                     reply = update.text
+                    # Collect media from the final update (produced files from tools)
+                    for path in getattr(update, "media", ()) or ():
+                        if path not in final_media:
+                            final_media.append(path)
                     continue
                 if not update.text:
                     continue
@@ -256,6 +261,7 @@ class OhmoGatewayBridge:
                 chat_id=message.chat_id,
                 content=reply,
                 metadata={**inbound_meta, "_session_key": session_key},
+                media=final_media,
             )
         )
 

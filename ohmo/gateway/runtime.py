@@ -67,6 +67,7 @@ class GatewayStreamUpdate:
     kind: str
     text: str
     metadata: dict[str, object]
+    media: tuple[str, ...] = ()
 
 
 class OhmoSessionRuntimePool:
@@ -163,6 +164,24 @@ class OhmoSessionRuntimePool:
             session_key,
             bundle.session_id,
         )
+
+    @staticmethod
+    def _collect_produced_files(bundle: RuntimeBundle) -> tuple[str, ...]:
+        """Return and clear produced_files from tool_metadata."""
+        tool_metadata = getattr(bundle.engine, "tool_metadata", None)
+        if not tool_metadata:
+            return ()
+        produced = tool_metadata.pop("produced_files", None)
+        if not produced or not isinstance(produced, list):
+            return ()
+        # Deduplicate while preserving order
+        seen: set[str] = set()
+        result: list[str] = []
+        for p in produced:
+            if isinstance(p, str) and p not in seen:
+                seen.add(p)
+                result.append(p)
+        return tuple(result)
 
     async def stream_message(self, message: InboundMessage, session_key: str):
         """Submit an inbound channel message and yield progress + final reply updates."""
@@ -303,12 +322,14 @@ class OhmoSessionRuntimePool:
                     metadata={"_session_key": session_key},
                 )
             await self._save_snapshot(bundle, session_key, user_prompt)
+            produced_media = self._collect_produced_files(bundle)
             reply = "".join(reply_parts).strip()
             if reply:
                 yield GatewayStreamUpdate(
                     kind="final",
                     text=reply,
                     metadata={"_session_key": session_key},
+                    media=produced_media,
                 )
             return
 
@@ -356,6 +377,7 @@ class OhmoSessionRuntimePool:
             await self._save_snapshot(bundle, session_key, user_prompt)
             return
         await self._save_snapshot(bundle, session_key, user_prompt)
+        produced_media = self._collect_produced_files(bundle)
         reply = "".join(reply_parts).strip()
         if reply:
             logger.info(
@@ -368,6 +390,7 @@ class OhmoSessionRuntimePool:
                 kind="final",
                 text=reply,
                 metadata={"_session_key": session_key},
+                media=produced_media,
             )
 
     async def _convert_stream_event(

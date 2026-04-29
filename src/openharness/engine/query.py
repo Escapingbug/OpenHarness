@@ -352,6 +352,14 @@ def _record_tool_carryover(
 ) -> None:
     if is_error:
         return
+    # Track files produced by tools (e.g. deliver_file) for channel delivery.
+    if tool_result_metadata and "produced_files" in tool_result_metadata:
+        produced = tool_result_metadata["produced_files"]
+        if isinstance(produced, list):
+            bucket = _tool_metadata_bucket(context.tool_metadata, "produced_files")
+            for path in produced:
+                if isinstance(path, str) and path not in bucket:
+                    bucket.append(path)
     if resolved_file_path is not None:
         _remember_active_artifact(context.tool_metadata, resolved_file_path)
     if tool_name == "read_file" and resolved_file_path is not None:
