@@ -89,6 +89,7 @@ class TelegramChannel(BaseChannel):
         BotCommand("effort", "Show or update reasoning effort"),
         BotCommand("export", "Export the current transcript"),
         BotCommand("stop", "Stop the current task"),
+        BotCommand("tables", "Resend recent tables as copyable text"),
         BotCommand("help", "Show available commands"),
     ]
 
@@ -107,6 +108,7 @@ class TelegramChannel(BaseChannel):
         self._media_group_buffers: dict[str, dict] = {}
         self._media_group_tasks: dict[str, asyncio.Task] = {}
         self._last_poll_activity: float = 0.0
+        self._pending_tables: dict[int, list[str]] = {}  # chat_id -> table markdown blocks
 
     async def start(self) -> None:
         """Start the Telegram bot with long polling."""
@@ -148,6 +150,7 @@ class TelegramChannel(BaseChannel):
         self._app.add_handler(CommandHandler("effort", self._forward_command))
         self._app.add_handler(CommandHandler("export", self._forward_command))
         self._app.add_handler(CommandHandler("stop", self._forward_command))
+        self._app.add_handler(CommandHandler("tables", self._on_tables))
         self._app.add_handler(CallbackQueryHandler(self._on_callback_query, pattern=r"^ohmo_perm:"))
 
         # Catch-all for any other slash commands not explicitly registered
@@ -333,6 +336,8 @@ class TelegramChannel(BaseChannel):
 
             for seg_index, (seg_kind, seg_content) in enumerate(segments):
                 if seg_kind == "table":
+                    # Collect table markdown for /tables command
+                    self._pending_tables.setdefault(chat_id, []).append(seg_content)
                     await self._send_table_images(
                         [seg_content], chat_id, thread_id, reply_params,
                     )
@@ -436,6 +441,44 @@ class TelegramChannel(BaseChannel):
             except Exception:
                 logger.warning("Failed to render table as image", exc_info=True)
 
+    async def _on_tables(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Handle /tables command: resend recent table markdown as copyable text."""
+        self._last_poll_activity = asyncio.get_event_loop().time()
+        if not update.message or not self._app:
+            return
+
+        chat_id = update.message.chat_id
+        thread_id = getattr(update.message, "message_thread_id", None)
+        tables = self._pending_tables.pop(chat_id, None)
+
+        if not tables:
+            await update.message.reply_text(
+                "No tables in recent messages.",
+                do_quote=False,
+                **({"message_thread_id": thread_id} if thread_id else {}),
+            )
+            return
+
+        for table_md in tables:
+            try:
+                text, entities = convert(table_md)
+                tg_entities = [TGMessageEntity.de_json(e.to_dict(), None) for e in entities]
+                chunks = split_entities(text, tg_entities, max_utf16_len=TELEGRAM_MAX_UTF16_LEN) if tg_entities else [(text, [])]
+                for chunk_text, chunk_entities in chunks:
+                    await self._app.bot.send_message(
+                        chat_id=chat_id,
+                        text=chunk_text,
+                        message_thread_id=thread_id,
+                        entities=chunk_entities or None,
+                    )
+            except Exception:
+                logger.warning("Failed to send table markdown", exc_info=True)
+                await self._app.bot.send_message(
+                    chat_id=chat_id,
+                    text=table_md,
+                    message_thread_id=thread_id,
+                )
+
     async def _on_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle /start command."""
         self._last_poll_activity = asyncio.get_event_loop().time()
@@ -484,6 +527,7 @@ class TelegramChannel(BaseChannel):
             "/effort — Show or update reasoning effort\n"
             "/export — Export the current transcript\n"
             "/stop — Stop the current task\n"
+            "/tables — Resend recent tables as copyable text\n"
             "/help — Show available commands",
             **reply_kwargs,
         )
@@ -562,6 +606,9 @@ class TelegramChannel(BaseChannel):
         user = update.effective_user
         chat_id = message.chat_id
         sender_id = self._sender_id(user)
+
+        # New user message: clear pending tables for this chat
+        self._pending_tables.pop(chat_id, None)
 
         # Store chat_id for replies
         self._chat_ids[sender_id] = chat_id

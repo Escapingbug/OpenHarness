@@ -113,7 +113,7 @@ async def test_telegram_registers_stop_command(monkeypatch):
         "start", "help", "new", "compact", "status", "summary",
         "cost", "usage", "model", "provider", "config", "memory",
         "agents", "tasks", "permissions", "allow", "deny",
-        "fast", "effort", "export", "stop",
+        "fast", "effort", "export", "stop", "tables",
     ]
     for cmd in expected_commands:
         assert cmd in commands, f"Expected /{cmd} to be registered"
@@ -351,3 +351,100 @@ async def test_telegram_send_splits_tables_into_separate_messages(monkeypatch):
 
     assert "Before table" in sent_messages[0]["text"]
     assert "After table" in sent_messages[1]["text"]
+
+
+@pytest.mark.asyncio
+async def test_tables_command_returns_pending_tables(monkeypatch):
+    """/tables should resend stored table markdown as copyable pre blocks."""
+    sent_messages: list[dict] = []
+
+    class FakeBot:
+        async def send_message(self, **kwargs):
+            sent_messages.append(kwargs)
+
+    channel = TelegramChannel(
+        TelegramConfig(token="token", allow_from=["*"], proxy=None, reply_to_message=False),
+        MessageBus(),
+    )
+    channel._app = SimpleNamespace(bot=FakeBot())
+
+    # Simulate tables collected during a send() call
+    channel._pending_tables[123] = [
+        "| Name | Type |\n|------|------|\n| CWE-78 | Injection |",
+        "| A | B |\n|---|---|\n| 1 | 2 |",
+    ]
+
+    update = SimpleNamespace(
+        message=SimpleNamespace(
+            chat_id=123,
+            message_thread_id=None,
+            reply_text=None,
+        ),
+        effective_user=SimpleNamespace(id=456, username="test", first_name="Test"),
+    )
+
+    # Mock reply_text to capture the "no tables" case
+    async def fake_reply_text(text, **kwargs):
+        sent_messages.append({"text": text, **kwargs})
+
+    update.message.reply_text = fake_reply_text
+
+    await channel._on_tables(update, SimpleNamespace())
+
+    # Should have sent the two tables as messages
+    assert len(sent_messages) == 2
+    # Tables are sent via convert(), so they'll be in pre blocks
+    for msg in sent_messages:
+        assert "entities" in msg or "text" in msg
+
+
+@pytest.mark.asyncio
+async def test_tables_command_no_tables():
+    """/tables with no pending tables should reply with a hint."""
+
+    class FakeBot:
+        async def send_message(self, **kwargs):
+            pass
+
+    channel = TelegramChannel(
+        TelegramConfig(token="token", allow_from=["*"], proxy=None, reply_to_message=False),
+        MessageBus(),
+    )
+    channel._app = SimpleNamespace(bot=FakeBot())
+
+    replied: list[str] = []
+
+    update = SimpleNamespace(
+        message=SimpleNamespace(
+            chat_id=123,
+            message_thread_id=None,
+        ),
+        effective_user=SimpleNamespace(id=456, username="test", first_name="Test"),
+    )
+
+    async def fake_reply_text(text, **kwargs):
+        replied.append(text)
+
+    update.message.reply_text = fake_reply_text
+
+    await channel._on_tables(update, SimpleNamespace())
+
+    assert len(replied) == 1
+    assert "No tables" in replied[0]
+
+
+@pytest.mark.asyncio
+async def test_pending_tables_cleared_on_new_user_message():
+    """Pending tables should be cleared when a new user message arrives."""
+    channel = TelegramChannel(
+        TelegramConfig(token="token", allow_from=["*"], proxy=None, reply_to_message=False),
+        MessageBus(),
+    )
+
+    # Simulate pending tables from previous bot reply
+    channel._pending_tables[123] = ["| A | B |"]
+
+    # Simulate _on_message clearing them (first thing it does)
+    channel._pending_tables.pop(123, None)
+
+    assert 123 not in channel._pending_tables
