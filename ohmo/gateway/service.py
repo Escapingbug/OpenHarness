@@ -281,6 +281,7 @@ class OhmoGatewayService:
                     skip_signal_handlers=True,
                     runtime_pool=self._runtime_pool,
                     bus=self._bus,
+                    bridge=self._bridge,
                 )
             except asyncio.CancelledError:
                 pass

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from unittest.mock import AsyncMock, Mock, patch
+from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
 import pytest
 
@@ -144,35 +144,15 @@ class TestExecuteJob:
 
 
 class TestExecuteAgentJob:
-    """Tests for agent-type cron job execution (requires runtime_pool + bus)."""
+    """Tests for agent-type cron job execution (requires bridge or runtime_pool + bus)."""
 
     @pytest.mark.asyncio
-    async def test_agent_job_with_runtime_pool(self) -> None:
-        """Agent job should call runtime_pool.stream_message and publish outbound."""
-        from openharness.channels.bus.events import OutboundMessage, InboundMessage
-        from ohmo.gateway.runtime import GatewayStreamUpdate
+    async def test_agent_job_with_bridge(self) -> None:
+        """Agent job with bridge should enqueue message via bridge.enqueue_cron_message."""
+        from openharness.channels.bus.events import InboundMessage
 
-        # Mock runtime_pool — stream_message must be an async generator
-        mock_pool = AsyncMock()
-        stream_calls: list[tuple] = []
-
-        async def _fake_stream(message, session_key):
-            stream_calls.append((message, session_key))
-            yield GatewayStreamUpdate(
-                kind="progress",
-                text="Thinking...",
-                metadata={"_progress": True, "_session_key": session_key},
-            )
-            yield GatewayStreamUpdate(
-                kind="final",
-                text="⏰ 提醒：review PR",
-                metadata={"_session_key": session_key},
-            )
-
-        mock_pool.stream_message = _fake_stream
-
-        # Mock bus
-        mock_bus = AsyncMock()
+        mock_bridge = MagicMock()
+        mock_bridge.enqueue_cron_message = MagicMock()
 
         job = {
             "name": "remind-review",
@@ -184,32 +164,30 @@ class TestExecuteAgentJob:
             "chat_id": "12345",
             "cwd": "/tmp",
         }
-        entry = await execute_job(job, runtime_pool=mock_pool, bus=mock_bus)
+        entry = await execute_job(job, bridge=mock_bridge)
 
         assert entry["status"] == "success"
         assert entry["name"] == "remind-review"
-        # stream_message should have been called with a synthetic InboundMessage
-        assert len(stream_calls) == 1
-        inbound_msg, session_key = stream_calls[0]
-        # Context should be wrapped with a prefix
+        # bridge.enqueue_cron_message should have been called
+        mock_bridge.enqueue_cron_message.assert_called_once()
+        call_args = mock_bridge.enqueue_cron_message.call_args
+        inbound_msg = call_args[0][0]
+        assert isinstance(inbound_msg, InboundMessage)
         assert "review PR" in inbound_msg.content
         assert inbound_msg.channel == "telegram"
         assert inbound_msg.chat_id == "12345"
-        # Outbound should have been published
-        mock_bus.publish_outbound.assert_called()
+        assert call_args[0][1] == "telegram:12345:user1"
 
     @pytest.mark.asyncio
-    async def test_agent_job_context_wrapping(self) -> None:
+    async def test_agent_job_bridge_context_wrapping(self) -> None:
         """Agent job context should be wrapped with a prefix for the AI."""
-        mock_pool = AsyncMock()
-        stream_calls: list[tuple] = []
+        mock_bridge = MagicMock()
+        enqueue_calls: list[tuple] = []
 
-        async def _fake_stream(message, session_key):
-            stream_calls.append((message, session_key))
-            yield GatewayStreamUpdate(kind="final", text="ok", metadata={"_session_key": session_key})
+        def _capture_enqueue(msg, sk):
+            enqueue_calls.append((msg, sk))
 
-        mock_pool.stream_message = _fake_stream
-        mock_bus = AsyncMock()
+        mock_bridge.enqueue_cron_message = _capture_enqueue
 
         job = {
             "name": "test-context",
@@ -221,23 +199,21 @@ class TestExecuteAgentJob:
             "chat_id": "1",
             "cwd": "/tmp",
         }
-        await execute_job(job, runtime_pool=mock_pool, bus=mock_bus)
-        inbound_msg, _ = stream_calls[0]
+        await execute_job(job, bridge=mock_bridge)
+        inbound_msg, _ = enqueue_calls[0]
         assert inbound_msg.content.startswith("[定时提醒上下文]")
         assert "提醒用户开会" in inbound_msg.content
 
     @pytest.mark.asyncio
     async def test_agent_job_already_formatted_context(self) -> None:
         """Context starting with '[' should not be double-wrapped."""
-        mock_pool = AsyncMock()
-        stream_calls: list[tuple] = []
+        mock_bridge = MagicMock()
+        enqueue_calls: list[tuple] = []
 
-        async def _fake_stream(message, session_key):
-            stream_calls.append((message, session_key))
-            yield GatewayStreamUpdate(kind="final", text="ok", metadata={"_session_key": session_key})
+        def _capture_enqueue(msg, sk):
+            enqueue_calls.append((msg, sk))
 
-        mock_pool.stream_message = _fake_stream
-        mock_bus = AsyncMock()
+        mock_bridge.enqueue_cron_message = _capture_enqueue
 
         job = {
             "name": "test-fmt",
@@ -249,13 +225,13 @@ class TestExecuteAgentJob:
             "chat_id": "1",
             "cwd": "/tmp",
         }
-        await execute_job(job, runtime_pool=mock_pool, bus=mock_bus)
-        inbound_msg, _ = stream_calls[0]
+        await execute_job(job, bridge=mock_bridge)
+        inbound_msg, _ = enqueue_calls[0]
         assert inbound_msg.content == "[自定义上下文] 某些内容"
 
     @pytest.mark.asyncio
-    async def test_agent_job_without_runtime_pool(self) -> None:
-        """Agent job without runtime_pool should record error, not crash."""
+    async def test_agent_job_without_bridge_or_pool(self) -> None:
+        """Agent job without bridge or runtime_pool should record error, not crash."""
         job = {
             "name": "agent-no-pool",
             "command": "",
@@ -268,25 +244,54 @@ class TestExecuteAgentJob:
         }
         entry = await execute_job(job)
         assert entry["status"] == "error"
-        assert "runtime_pool" in entry["stderr"].lower() or "no runtime" in entry["stderr"].lower()
+        assert "bridge" in entry["stderr"].lower() or "runtime_pool" in entry["stderr"].lower()
 
     @pytest.mark.asyncio
-    async def test_shell_job_unchanged_with_runtime_pool(self) -> None:
-        """Shell job should still use subprocess even when runtime_pool is provided."""
+    async def test_agent_job_fallback_to_runtime_pool(self) -> None:
+        """Agent job without bridge should fall back to runtime_pool.stream_message."""
+        from ohmo.gateway.runtime import GatewayStreamUpdate
+
         mock_pool = AsyncMock()
+        stream_calls: list[tuple] = []
+
+        async def _fake_stream(message, session_key):
+            stream_calls.append((message, session_key))
+            yield GatewayStreamUpdate(kind="final", text="done", metadata={"_session_key": session_key})
+
+        mock_pool.stream_message = _fake_stream
         mock_bus = AsyncMock()
 
-        job = {"name": "shell-with-pool", "command": "echo still-shell", "cwd": "/tmp"}
+        job = {
+            "name": "fallback-pool",
+            "command": "",
+            "type": "agent",
+            "context": "test fallback",
+            "session_key": "t:1:u",
+            "channel": "t",
+            "chat_id": "1",
+            "cwd": "/tmp",
+        }
         entry = await execute_job(job, runtime_pool=mock_pool, bus=mock_bus)
+        assert entry["status"] == "success"
+        assert len(stream_calls) == 1
+        mock_bus.publish_outbound.assert_called()
+
+    @pytest.mark.asyncio
+    async def test_shell_job_unchanged_with_bridge(self) -> None:
+        """Shell job should still use subprocess even when bridge is provided."""
+        mock_bridge = MagicMock()
+
+        job = {"name": "shell-with-bridge", "command": "echo still-shell", "cwd": "/tmp"}
+        entry = await execute_job(job, bridge=mock_bridge)
 
         assert entry["status"] == "success"
         assert "still-shell" in entry["stdout"]
-        # runtime_pool should NOT have been called
-        mock_pool.stream_message.assert_not_called()
+        # bridge should NOT have been called
+        mock_bridge.enqueue_cron_message.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_agent_job_stream_error(self) -> None:
-        """Agent job should handle stream_message exceptions gracefully."""
+        """Agent job should handle stream_message exceptions gracefully (fallback path)."""
         mock_pool = AsyncMock()
 
         async def _failing_stream(message, session_key):
@@ -310,10 +315,9 @@ class TestExecuteAgentJob:
         assert entry["status"] == "error"
 
     @pytest.mark.asyncio
-    async def test_agent_once_job_disabled_after_success(self) -> None:
-        """One-shot agent job should be disabled after successful execution."""
+    async def test_agent_once_job_disabled_after_bridge_enqueue(self) -> None:
+        """One-shot agent job should be disabled after successful bridge enqueue."""
         from openharness.services.cron import upsert_cron_job, get_cron_job
-        from ohmo.gateway.runtime import GatewayStreamUpdate
 
         upsert_cron_job({
             "name": "once-agent",
@@ -328,18 +332,11 @@ class TestExecuteAgentJob:
             "cwd": "/tmp",
         })
 
-        mock_pool = AsyncMock()
-
-        async def _fake_stream(message, session_key):
-            yield GatewayStreamUpdate(kind="final", text="done", metadata={"_session_key": session_key})
-
-        mock_pool.stream_message = _fake_stream
-        mock_bus = AsyncMock()
+        mock_bridge = MagicMock()
 
         entry = await execute_job(
             {"name": "once-agent", "command": "", "type": "agent", "context": "one-shot", "session_key": "t:1:u", "channel": "t", "chat_id": "1", "once": True, "cwd": "/tmp"},
-            runtime_pool=mock_pool,
-            bus=mock_bus,
+            bridge=mock_bridge,
         )
         assert entry["status"] == "success"
         job = get_cron_job("once-agent")

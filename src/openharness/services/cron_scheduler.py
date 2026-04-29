@@ -153,12 +153,17 @@ async def execute_job(
     *,
     runtime_pool: Any | None = None,
     bus: Any | None = None,
+    bridge: Any | None = None,
 ) -> dict[str, Any]:
     """Run a single cron job and return a history entry.
 
-    For agent-type jobs (``job["type"] == "agent"``), *runtime_pool* and *bus*
-    must be provided.  If they are missing, the job is recorded as an error.
-    Shell-type jobs always use subprocess regardless of *runtime_pool*/*bus*.
+    For agent-type jobs (``job["type"] == "agent"``), *bridge* should be
+    provided so the message is enqueued through the bridge's session
+    management (which handles queuing when the session is busy).  If
+    *bridge* is not available but *runtime_pool* and *bus* are, the job
+    falls back to calling ``stream_message`` directly (no queuing).
+    If none of these are available, the job is recorded as an error.
+    Shell-type jobs always use subprocess regardless of the extra arguments.
     """
     name = job["name"]
     started_at = datetime.now(timezone.utc)
@@ -172,7 +177,7 @@ async def execute_job(
 
         logger.info("Executing agent cron job %r: context=%r", name, context_text[:80])
 
-        if runtime_pool is None:
+        if bridge is None and runtime_pool is None:
             entry = {
                 "name": name,
                 "command": "",
@@ -181,7 +186,7 @@ async def execute_job(
                 "returncode": -1,
                 "status": "error",
                 "stdout": "",
-                "stderr": "Agent job requires runtime_pool but none was provided",
+                "stderr": "Agent job requires bridge or runtime_pool but neither was provided",
             }
             mark_job_run(name, success=False)
             append_history(entry)
@@ -197,7 +202,7 @@ async def execute_job(
         else:
             inbound_content = f"[定时提醒上下文] {context_text}"
 
-        # Construct a synthetic inbound message for the runtime pool
+        # Construct a synthetic inbound message
         inbound_msg = InboundMessage(
             channel=channel,
             sender_id="cron",
@@ -206,6 +211,27 @@ async def execute_job(
             metadata={"_cron": True},
         )
 
+        # Prefer bridge (handles queuing when session is busy)
+        if bridge is not None:
+            bridge.enqueue_cron_message(inbound_msg, session_key)
+            entry = {
+                "name": name,
+                "command": f"[agent] {context_text[:120]}",
+                "started_at": started_at.isoformat(),
+                "ended_at": datetime.now(timezone.utc).isoformat(),
+                "returncode": 0,
+                "status": "success",
+                "stdout": "Enqueued via bridge",
+                "stderr": "",
+            }
+            mark_job_run(name, success=True)
+            if job.get("once"):
+                set_job_enabled(name, False)
+            append_history(entry)
+            logger.info("Agent job %r enqueued via bridge", name)
+            return entry
+
+        # Fallback: direct stream_message (no queuing, for non-gateway use)
         try:
             reply_parts: list[str] = []
             async for update in runtime_pool.stream_message(inbound_msg, session_key):
@@ -384,6 +410,7 @@ async def run_scheduler_loop(
     skip_signal_handlers: bool = False,
     runtime_pool: Any | None = None,
     bus: Any | None = None,
+    bridge: Any | None = None,
 ) -> None:
     """Main scheduler loop.  Runs until SIGTERM or *once* is True (test mode).
 
@@ -392,8 +419,9 @@ async def run_scheduler_loop(
     ``NotImplementedError``) and when the loop runs embedded inside another
     process that manages its own signal handlers (e.g. the gateway).
 
-    *runtime_pool* and *bus* are forwarded to :func:`execute_job` for
-    agent-type cron jobs.
+    *runtime_pool*, *bus*, and *bridge* are forwarded to :func:`execute_job`
+    for agent-type cron jobs.  *bridge* is preferred for gateway-embedded
+    scheduling because it handles session queuing.
     """
     shutdown = asyncio.Event()
 
@@ -420,7 +448,7 @@ async def run_scheduler_loop(
                 logger.info("Tick: %d job(s) due", len(due))
                 # Execute due jobs concurrently
                 results = await asyncio.gather(
-                    *(execute_job(job, runtime_pool=runtime_pool, bus=bus) for job in due),
+                    *(execute_job(job, runtime_pool=runtime_pool, bus=bus, bridge=bridge) for job in due),
                     return_exceptions=True,
                 )
                 for result in results:

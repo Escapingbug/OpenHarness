@@ -6,7 +6,7 @@ import asyncio
 import logging
 from collections.abc import Awaitable, Callable
 
-from openharness.channels.bus.events import OutboundMessage
+from openharness.channels.bus.events import InboundMessage, OutboundMessage
 from openharness.channels.bus.queue import MessageBus
 
 from ohmo.gateway.router import session_key_for_message
@@ -52,7 +52,16 @@ def _format_gateway_error(exc: Exception) -> str:
 
 
 class OhmoGatewayBridge:
-    """Consume inbound messages and publish assistant replies."""
+    """Consume inbound messages and publish assistant replies.
+
+    Supports queuing of cron-triggered agent messages: when a cron job fires
+    while the session is busy processing a user message, the cron message is
+    queued and processed after the current task finishes.  User-initiated
+    messages (new messages or /stop) always clear the queue — a new user
+    message replaces the queued cron message, while /stop clears it and then
+    immediately processes it (since /stop means "change direction", not "go
+    silent").
+    """
 
     def __init__(
         self,
@@ -67,6 +76,37 @@ class OhmoGatewayBridge:
         self._running = False
         self._session_tasks: dict[str, asyncio.Task[None]] = {}
         self._session_cancel_reasons: dict[str, str] = {}
+        # Per-session pending cron messages (at most one per session).
+        self._pending_cron: dict[str, InboundMessage] = {}
+
+    # ------------------------------------------------------------------
+    # Public API for cron scheduler
+    # ------------------------------------------------------------------
+
+    def enqueue_cron_message(self, message: InboundMessage, session_key: str) -> bool:
+        """Enqueue a cron-triggered message for *session_key*.
+
+        If the session is idle, the message is processed immediately.
+        If the session is busy, the message is queued and will be processed
+        after the current task finishes.  Returns True if the message was
+        enqueued (or processed immediately), False if a cron message was
+        already queued for this session (the new one replaces the old one).
+        """
+        self._pending_cron[session_key] = message
+        logger.info(
+            "ohmo cron message enqueued session_key=%s session_busy=%s",
+            session_key,
+            session_key in self._session_tasks and not self._session_tasks[session_key].done(),
+        )
+        # If session is idle, process immediately
+        task = self._session_tasks.get(session_key)
+        if task is None or task.done():
+            self._drain_pending_cron(session_key)
+        return True
+
+    # ------------------------------------------------------------------
+    # Main loop
+    # ------------------------------------------------------------------
 
     async def run(self) -> None:
         self._running = True
@@ -109,6 +149,9 @@ class OhmoGatewayBridge:
             if message.content.strip() == "/restart":
                 await self._handle_restart(message, session_key)
                 continue
+            # User sent a new message — clear any pending cron for this session
+            # (the user is actively talking, the cron reminder is no longer needed)
+            self._pending_cron.pop(session_key, None)
             await self._interrupt_session(
                 session_key,
                 reason="replaced by a newer user message",
@@ -132,6 +175,10 @@ class OhmoGatewayBridge:
             self._session_cancel_reasons[session_key] = "gateway stopping"
             task.cancel()
 
+    # ------------------------------------------------------------------
+    # Command handlers
+    # ------------------------------------------------------------------
+
     async def _handle_stop(self, message, session_key: str) -> None:
         stopped = await self._interrupt_session(
             session_key,
@@ -146,8 +193,13 @@ class OhmoGatewayBridge:
                 metadata={"_session_key": session_key},
             )
         )
+        # After /stop, drain any pending cron message — the user stopped the
+        # current direction, so the queued reminder should fire immediately.
+        self._drain_pending_cron(session_key)
 
     async def _handle_restart(self, message, session_key: str) -> None:
+        # Clear pending cron on restart — the session is being torn down
+        self._pending_cron.pop(session_key, None)
         await self._interrupt_session(
             session_key,
             reason="restarting gateway by user command",
@@ -164,6 +216,10 @@ class OhmoGatewayBridge:
             result = self._restart_gateway(message, session_key)
             if asyncio.iscoroutine(result):
                 await result
+
+    # ------------------------------------------------------------------
+    # Session lifecycle
+    # ------------------------------------------------------------------
 
     async def _interrupt_session(
         self,
@@ -248,6 +304,9 @@ class OhmoGatewayBridge:
                 _content_snippet(message.content),
             )
             reply = _format_gateway_error(exc)
+        finally:
+            # After the current task finishes, drain any pending cron message
+            self._drain_pending_cron(session_key)
         if not reply:
             logger.info(
                 "ohmo inbound finished without final reply channel=%s chat_id=%s session_key=%s",
@@ -300,3 +359,24 @@ class OhmoGatewayBridge:
         if current is task:
             self._session_tasks.pop(session_key, None)
             self._session_cancel_reasons.pop(session_key, None)
+
+    # ------------------------------------------------------------------
+    # Pending cron drain
+    # ------------------------------------------------------------------
+
+    def _drain_pending_cron(self, session_key: str) -> None:
+        """If there is a pending cron message for *session_key*, start processing it."""
+        message = self._pending_cron.pop(session_key, None)
+        if message is None:
+            return
+        logger.info(
+            "ohmo draining pending cron message session_key=%s content=%r",
+            session_key,
+            _content_snippet(message.content),
+        )
+        task = asyncio.create_task(
+            self._process_message(message, session_key),
+            name=f"ohmo-cron:{session_key}",
+        )
+        self._session_tasks[session_key] = task
+        task.add_done_callback(lambda finished, key=session_key: self._cleanup_task(key, finished))
