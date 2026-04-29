@@ -133,27 +133,29 @@ class TestMarkRun:
 
 
 class TestAgentJobSchema:
-    """Tests for agent-type cron jobs (type='agent' with prompt, session_key, etc.)."""
+    """Tests for agent-type cron jobs (type='agent' with context, session_key, etc.)."""
 
     def test_upsert_agent_job(self) -> None:
         """Agent job with type='agent' should persist all extra fields."""
         upsert_cron_job({
             "name": "remind-review",
             "schedule": "0 9 * * 1-5",
-            "command": "",  # not used for agent jobs but required by schema
+            "command": "",
             "type": "agent",
-            "prompt": "提醒用户 review PR",
+            "context": "用户在 10:00 请求你在 10:10 提醒他 review PR",
             "session_key": "telegram:12345:user1",
             "channel": "telegram",
             "chat_id": "12345",
+            "once": True,
         })
         job = get_cron_job("remind-review")
         assert job is not None
         assert job["type"] == "agent"
-        assert job["prompt"] == "提醒用户 review PR"
+        assert job["context"] == "用户在 10:00 请求你在 10:10 提醒他 review PR"
         assert job["session_key"] == "telegram:12345:user1"
         assert job["channel"] == "telegram"
         assert job["chat_id"] == "12345"
+        assert job["once"] is True
 
     def test_agent_job_enabled_and_next_run(self) -> None:
         """Agent job should still get enabled=True and next_run computed."""
@@ -162,7 +164,7 @@ class TestAgentJobSchema:
             "schedule": "0 * * * *",
             "command": "",
             "type": "agent",
-            "prompt": "check status",
+            "context": "check status",
             "session_key": "test:1:user",
             "channel": "telegram",
             "chat_id": "1",
@@ -178,7 +180,7 @@ class TestAgentJobSchema:
         job = get_cron_job("shell-job")
         assert job is not None
         assert job.get("type") is None
-        assert job.get("prompt") is None
+        assert job.get("context") is None
 
     def test_agent_job_replaces_shell_job_same_name(self) -> None:
         """Replacing a shell job with an agent job of same name should work."""
@@ -188,7 +190,7 @@ class TestAgentJobSchema:
             "schedule": "* * * * *",
             "command": "",
             "type": "agent",
-            "prompt": "hello",
+            "context": "hello",
             "session_key": "t:1:u",
             "channel": "t",
             "chat_id": "1",
@@ -204,7 +206,7 @@ class TestAgentJobSchema:
             "schedule": "*/5 * * * *",
             "command": "",
             "type": "agent",
-            "prompt": "test",
+            "context": "test",
             "session_key": "t:1:u",
             "channel": "t",
             "chat_id": "1",

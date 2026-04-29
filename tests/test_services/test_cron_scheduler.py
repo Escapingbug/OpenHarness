@@ -178,7 +178,7 @@ class TestExecuteAgentJob:
             "name": "remind-review",
             "command": "",
             "type": "agent",
-            "prompt": "提醒用户 review PR",
+            "context": "用户在 10:00 请求你在 10:10 提醒他 review PR",
             "session_key": "telegram:12345:user1",
             "channel": "telegram",
             "chat_id": "12345",
@@ -191,11 +191,67 @@ class TestExecuteAgentJob:
         # stream_message should have been called with a synthetic InboundMessage
         assert len(stream_calls) == 1
         inbound_msg, session_key = stream_calls[0]
-        assert inbound_msg.content == "提醒用户 review PR"
+        # Context should be wrapped with a prefix
+        assert "review PR" in inbound_msg.content
         assert inbound_msg.channel == "telegram"
         assert inbound_msg.chat_id == "12345"
         # Outbound should have been published
         mock_bus.publish_outbound.assert_called()
+
+    @pytest.mark.asyncio
+    async def test_agent_job_context_wrapping(self) -> None:
+        """Agent job context should be wrapped with a prefix for the AI."""
+        mock_pool = AsyncMock()
+        stream_calls: list[tuple] = []
+
+        async def _fake_stream(message, session_key):
+            stream_calls.append((message, session_key))
+            yield GatewayStreamUpdate(kind="final", text="ok", metadata={"_session_key": session_key})
+
+        mock_pool.stream_message = _fake_stream
+        mock_bus = AsyncMock()
+
+        job = {
+            "name": "test-context",
+            "command": "",
+            "type": "agent",
+            "context": "提醒用户开会",
+            "session_key": "t:1:u",
+            "channel": "t",
+            "chat_id": "1",
+            "cwd": "/tmp",
+        }
+        await execute_job(job, runtime_pool=mock_pool, bus=mock_bus)
+        inbound_msg, _ = stream_calls[0]
+        assert inbound_msg.content.startswith("[定时提醒上下文]")
+        assert "提醒用户开会" in inbound_msg.content
+
+    @pytest.mark.asyncio
+    async def test_agent_job_already_formatted_context(self) -> None:
+        """Context starting with '[' should not be double-wrapped."""
+        mock_pool = AsyncMock()
+        stream_calls: list[tuple] = []
+
+        async def _fake_stream(message, session_key):
+            stream_calls.append((message, session_key))
+            yield GatewayStreamUpdate(kind="final", text="ok", metadata={"_session_key": session_key})
+
+        mock_pool.stream_message = _fake_stream
+        mock_bus = AsyncMock()
+
+        job = {
+            "name": "test-fmt",
+            "command": "",
+            "type": "agent",
+            "context": "[自定义上下文] 某些内容",
+            "session_key": "t:1:u",
+            "channel": "t",
+            "chat_id": "1",
+            "cwd": "/tmp",
+        }
+        await execute_job(job, runtime_pool=mock_pool, bus=mock_bus)
+        inbound_msg, _ = stream_calls[0]
+        assert inbound_msg.content == "[自定义上下文] 某些内容"
 
     @pytest.mark.asyncio
     async def test_agent_job_without_runtime_pool(self) -> None:
@@ -204,7 +260,7 @@ class TestExecuteAgentJob:
             "name": "agent-no-pool",
             "command": "",
             "type": "agent",
-            "prompt": "hello",
+            "context": "hello",
             "session_key": "t:1:u",
             "channel": "t",
             "chat_id": "1",
@@ -244,7 +300,7 @@ class TestExecuteAgentJob:
             "name": "agent-error",
             "command": "",
             "type": "agent",
-            "prompt": "hello",
+            "context": "hello",
             "session_key": "t:1:u",
             "channel": "t",
             "chat_id": "1",
@@ -252,6 +308,62 @@ class TestExecuteAgentJob:
         }
         entry = await execute_job(job, runtime_pool=mock_pool, bus=mock_bus)
         assert entry["status"] == "error"
+
+    @pytest.mark.asyncio
+    async def test_agent_once_job_disabled_after_success(self) -> None:
+        """One-shot agent job should be disabled after successful execution."""
+        from openharness.services.cron import upsert_cron_job, get_cron_job
+        from ohmo.gateway.runtime import GatewayStreamUpdate
+
+        upsert_cron_job({
+            "name": "once-agent",
+            "schedule": "* * * * *",
+            "command": "",
+            "type": "agent",
+            "context": "one-shot reminder",
+            "session_key": "t:1:u",
+            "channel": "t",
+            "chat_id": "1",
+            "once": True,
+            "cwd": "/tmp",
+        })
+
+        mock_pool = AsyncMock()
+
+        async def _fake_stream(message, session_key):
+            yield GatewayStreamUpdate(kind="final", text="done", metadata={"_session_key": session_key})
+
+        mock_pool.stream_message = _fake_stream
+        mock_bus = AsyncMock()
+
+        entry = await execute_job(
+            {"name": "once-agent", "command": "", "type": "agent", "context": "one-shot", "session_key": "t:1:u", "channel": "t", "chat_id": "1", "once": True, "cwd": "/tmp"},
+            runtime_pool=mock_pool,
+            bus=mock_bus,
+        )
+        assert entry["status"] == "success"
+        job = get_cron_job("once-agent")
+        assert job is not None
+        assert job["enabled"] is False
+
+    @pytest.mark.asyncio
+    async def test_shell_once_job_disabled_after_success(self) -> None:
+        """One-shot shell job should be disabled after successful execution."""
+        from openharness.services.cron import upsert_cron_job, get_cron_job
+
+        upsert_cron_job({
+            "name": "once-shell",
+            "schedule": "* * * * *",
+            "command": "echo once",
+            "once": True,
+            "cwd": "/tmp",
+        })
+
+        entry = await execute_job({"name": "once-shell", "command": "echo once", "once": True, "cwd": "/tmp"})
+        assert entry["status"] == "success"
+        job = get_cron_job("once-shell")
+        assert job is not None
+        assert job["enabled"] is False
 
 
 class TestSchedulerLoop:

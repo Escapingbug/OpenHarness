@@ -23,6 +23,7 @@ from openharness.config.paths import get_data_dir, get_logs_dir
 from openharness.services.cron import (
     load_cron_jobs,
     mark_job_run,
+    set_job_enabled,
     validate_cron_expression,
 )
 from openharness.sandbox import SandboxUnavailableError
@@ -164,12 +165,12 @@ async def execute_job(
 
     # ----- Agent-type job -----
     if job.get("type") == "agent":
-        prompt = job.get("prompt", "")
+        context_text = job.get("context", "") or job.get("prompt", "")
         session_key = job.get("session_key", "")
         channel = job.get("channel", "")
         chat_id = job.get("chat_id", "")
 
-        logger.info("Executing agent cron job %r: prompt=%r", name, prompt[:80])
+        logger.info("Executing agent cron job %r: context=%r", name, context_text[:80])
 
         if runtime_pool is None:
             entry = {
@@ -188,12 +189,20 @@ async def execute_job(
 
         from openharness.channels.bus.events import InboundMessage, OutboundMessage
 
+        # Wrap context into a natural message that the AI can respond to
+        # in the same session as the original conversation.
+        if context_text.startswith("["):
+            # Already formatted by the caller
+            inbound_content = context_text
+        else:
+            inbound_content = f"[定时提醒上下文] {context_text}"
+
         # Construct a synthetic inbound message for the runtime pool
         inbound_msg = InboundMessage(
             channel=channel,
             sender_id="cron",
             chat_id=chat_id,
-            content=prompt,
+            content=inbound_content,
             metadata={"_cron": True},
         )
 
@@ -229,7 +238,7 @@ async def execute_job(
 
             entry = {
                 "name": name,
-                "command": f"[agent] {prompt[:120]}",
+                "command": f"[agent] {context_text[:120]}",
                 "started_at": started_at.isoformat(),
                 "ended_at": datetime.now(timezone.utc).isoformat(),
                 "returncode": 0,
@@ -238,13 +247,15 @@ async def execute_job(
                 "stderr": "",
             }
             mark_job_run(name, success=True)
+            if job.get("once"):
+                set_job_enabled(name, False)
             append_history(entry)
             logger.info("Agent job %r finished: success", name)
             return entry
         except Exception as exc:
             entry = {
                 "name": name,
-                "command": f"[agent] {prompt[:120]}",
+                "command": f"[agent] {context_text[:120]}",
                 "started_at": started_at.isoformat(),
                 "ended_at": datetime.now(timezone.utc).isoformat(),
                 "returncode": -1,
@@ -333,6 +344,8 @@ async def execute_job(
         "stderr": (stderr.decode("utf-8", errors="replace")[-2000:] if stderr else ""),
     }
     mark_job_run(name, success=success)
+    if success and job.get("once"):
+        set_job_enabled(name, False)
     append_history(entry)
     logger.info("Job %r finished: %s (rc=%s)", name, entry["status"], process.returncode)
     return entry

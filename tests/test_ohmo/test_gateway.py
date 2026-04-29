@@ -1558,7 +1558,7 @@ class TestGatewayEmbeddedCron:
             "name": "remind-review",
             "command": "",
             "type": "agent",
-            "prompt": "提醒用户 review PR",
+            "context": "用户在 10:00 请求你在 10:10 提醒他 review PR",
             "session_key": "telegram:12345:user1",
             "channel": "telegram",
             "chat_id": "12345",

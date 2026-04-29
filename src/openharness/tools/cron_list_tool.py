@@ -47,9 +47,19 @@ class CronListTool(BaseTool):
                 next_run = next_run[:19]
             last_status = job.get("last_status", "")
             status_str = f" ({last_status})" if last_status else ""
-            lines.append(
-                f"[{enabled}] {job['name']}  {job.get('schedule', '?')}\n"
-                f"     cmd: {job['command']}\n"
-                f"     last: {last_run}{status_str}  next: {next_run}"
-            )
+            job_type = job.get("type", "shell")
+            once_tag = " one-shot" if job.get("once") else ""
+            if job_type == "agent":
+                context_preview = (job.get("context") or job.get("prompt") or "")[:80]
+                lines.append(
+                    f"[{enabled}] {job['name']}  {job.get('schedule', '?')}  agent{once_tag}\n"
+                    f"     context: {context_preview}\n"
+                    f"     last: {last_run}{status_str}  next: {next_run}"
+                )
+            else:
+                lines.append(
+                    f"[{enabled}] {job['name']}  {job.get('schedule', '?')}{once_tag}\n"
+                    f"     cmd: {job['command']}\n"
+                    f"     last: {last_run}{status_str}  next: {next_run}"
+                )
         return ToolResult(output="\n".join(lines))

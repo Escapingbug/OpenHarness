@@ -408,6 +408,14 @@ class OhmoSessionRuntimePool:
         user_message: ConversationMessage | str,
     ):
         bundle.engine.set_system_prompt(self._runtime_system_prompt(bundle, user_prompt))
+        # Inject gateway session info into tool_metadata so tools can access it
+        tool_metadata = getattr(bundle.engine, "tool_metadata", None)
+        if tool_metadata is not None:
+            tool_metadata["_gateway_session"] = {
+                "channel": message.channel,
+                "chat_id": message.chat_id,
+                "session_key": session_key,
+            }
         reply_parts: list[str] = []
         yield GatewayStreamUpdate(
             kind="progress",
