@@ -345,9 +345,26 @@ class TelegramChannel(BaseChannel):
                     # Only reply-quote on the very first sub-message
                     table_reply = reply_params if is_first else None
                     is_first = False
-                    await self._send_table_images(
-                        [seg_content], chat_id, thread_id, table_reply,
-                    )
+                    try:
+                        await self._send_table_images(
+                            [seg_content], chat_id, thread_id, table_reply,
+                        )
+                    except Exception:
+                        logger.warning("Table image send failed, falling back to text", exc_info=True)
+                        # Fallback: send table as text with convert()
+                        try:
+                            text, entities = convert(seg_content)
+                            tg_entities = [TGMessageEntity.de_json(e.to_dict(), None) for e in entities]
+                            chunks = split_entities(text, tg_entities, max_utf16_len=TELEGRAM_MAX_UTF16_LEN) if tg_entities else [(text, [])]
+                            for chunk_text, chunk_entities in chunks:
+                                await self._app.bot.send_message(
+                                    chat_id=chat_id,
+                                    text=chunk_text,
+                                    message_thread_id=thread_id,
+                                    entities=chunk_entities or None,
+                                )
+                        except Exception:
+                            logger.warning("Table text fallback also failed", exc_info=True)
                     continue
 
                 # Text block — convert and send as usual
@@ -423,35 +440,32 @@ class TelegramChannel(BaseChannel):
         thread_id: int | None,
         reply_params: ReplyParameters | None,
     ) -> None:
-        """Render Markdown tables as PNG images and send them via send_photo."""
-        try:
-            from md2png_lite import render_markdown_image
-        except ImportError:
-            logger.debug("md2png-lite not installed, skipping table image rendering")
-            return
+        """Render Markdown tables as PNG images and send them via send_photo.
+
+        Raises ImportError if md2png-lite is not installed.
+        Raises Exception if image rendering or sending fails.
+        """
+        from md2png_lite import render_markdown_image
 
         for table_md in table_blocks:
+            result = render_markdown_image(table_md, theme="github-dark")
+            if not result.get("ok"):
+                raise RuntimeError(f"md2png-lite rendering failed: {result}")
+            img_bytes = base64.b64decode(result["base64"])
+            with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
+                tmp.write(img_bytes)
+                tmp_path = tmp.name
             try:
-                result = render_markdown_image(table_md, theme="github-dark")
-                if not result.get("ok"):
-                    continue
-                img_bytes = base64.b64decode(result["base64"])
-                with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
-                    tmp.write(img_bytes)
-                    tmp_path = tmp.name
-                try:
-                    with open(tmp_path, "rb") as f:
-                        await self._app.bot.send_photo(
-                            chat_id=chat_id,
-                            photo=f,
-                            message_thread_id=thread_id,
-                            reply_parameters=reply_params,
-                        )
-                finally:
-                    import os
-                    os.unlink(tmp_path)
-            except Exception:
-                logger.warning("Failed to render table as image", exc_info=True)
+                with open(tmp_path, "rb") as f:
+                    await self._app.bot.send_photo(
+                        chat_id=chat_id,
+                        photo=f,
+                        message_thread_id=thread_id,
+                        reply_parameters=reply_params,
+                    )
+            finally:
+                import os
+                os.unlink(tmp_path)
 
     async def _on_tables(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle /tables command: resend recent table markdown as copyable text."""
