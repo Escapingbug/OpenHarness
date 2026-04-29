@@ -18,14 +18,14 @@ class DeliverFileToolInput(BaseModel):
 class DeliverFileTool(BaseTool):
     """Send a file to the user through the chat channel.
 
-    Use this when the user should receive a file (image, document, etc.)
-    as an attachment in their chat. Not needed for code files the user
-    can access in the workspace — only for deliverables the user asked
-    for or would expect to receive.
+    Use this ONLY when the user explicitly asks for a file attachment
+    (e.g. "send me the image", "email me the report", "share the PDF").
+    Do NOT use for code files, logs, or internal artifacts the user can
+    already access in the workspace.
     """
 
     name = "deliver_file"
-    description = "Deliver a file to the user as a chat attachment. Use for images, documents, or other files the user should receive."
+    description = "Send a file to the user as a chat attachment. Only use when the user explicitly asks for a file (image, document, etc.). Do not use for code files or internal artifacts."
     input_model = DeliverFileToolInput
 
     async def execute(
