@@ -583,6 +583,10 @@ async def test_version_context_and_share_commands(tmp_path: Path, monkeypatch):
 async def test_auth_feedback_and_project_context_commands(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("OPENHARNESS_CONFIG_DIR", str(tmp_path / "config"))
     monkeypatch.setenv("OPENHARNESS_DATA_DIR", str(tmp_path / "data"))
+    # Clear API key env vars so load_settings() reads from the config file,
+    # not from the host environment.
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     registry = create_default_command_registry()
     context = _make_context(tmp_path)
 
