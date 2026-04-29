@@ -3,85 +3,22 @@
 from __future__ import annotations
 
 import asyncio
-import re
 
 import logging
-from telegram import BotCommand, ReplyParameters, Update
+from telegram import BotCommand, MessageEntity as TGMessageEntity, ReplyParameters, Update
 from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 from telegram.request import HTTPXRequest
+from telegramify_markdown import convert, split_entities
 
 from openharness.channels.bus.events import OutboundMessage
 from openharness.channels.bus.queue import MessageBus
 from openharness.channels.impl.base import BaseChannel
 from openharness.config.schema import TelegramConfig
-from openharness.utils.helpers import split_message
 
 logger = logging.getLogger(__name__)
 
-TELEGRAM_MAX_MESSAGE_LEN = 4000  # Telegram message character limit
-
-
-def _markdown_to_telegram_html(text: str) -> str:
-    """
-    Convert markdown to Telegram-safe HTML.
-    """
-    if not text:
-        return ""
-
-    # 1. Extract and protect code blocks (preserve content from other processing)
-    code_blocks: list[str] = []
-    def save_code_block(m: re.Match) -> str:
-        code_blocks.append(m.group(1))
-        return f"\x00CB{len(code_blocks) - 1}\x00"
-
-    text = re.sub(r'```[\w]*\n?([\s\S]*?)```', save_code_block, text)
-
-    # 2. Extract and protect inline code
-    inline_codes: list[str] = []
-    def save_inline_code(m: re.Match) -> str:
-        inline_codes.append(m.group(1))
-        return f"\x00IC{len(inline_codes) - 1}\x00"
-
-    text = re.sub(r'`([^`]+)`', save_inline_code, text)
-
-    # 3. Headers # Title -> just the title text
-    text = re.sub(r'^#{1,6}\s+(.+)$', r'\1', text, flags=re.MULTILINE)
-
-    # 4. Blockquotes > text -> just the text (before HTML escaping)
-    text = re.sub(r'^>\s*(.*)$', r'\1', text, flags=re.MULTILINE)
-
-    # 5. Escape HTML special characters
-    text = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-
-    # 6. Links [text](url) - must be before bold/italic to handle nested cases
-    text = re.sub(r'\[([^\]]+)\]\(([^)]+)\)', r'<a href="\2">\1</a>', text)
-
-    # 7. Bold **text** or __text__
-    text = re.sub(r'\*\*(.+?)\*\*', r'<b>\1</b>', text)
-    text = re.sub(r'__(.+?)__', r'<b>\1</b>', text)
-
-    # 8. Italic _text_ (avoid matching inside words like some_var_name)
-    text = re.sub(r'(?<![a-zA-Z0-9])_([^_]+)_(?![a-zA-Z0-9])', r'<i>\1</i>', text)
-
-    # 9. Strikethrough ~~text~~
-    text = re.sub(r'~~(.+?)~~', r'<s>\1</s>', text)
-
-    # 10. Bullet lists - item -> • item
-    text = re.sub(r'^[-*]\s+', '• ', text, flags=re.MULTILINE)
-
-    # 11. Restore inline code with HTML tags
-    for i, code in enumerate(inline_codes):
-        # Escape HTML in code content
-        escaped = code.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-        text = text.replace(f"\x00IC{i}\x00", f"<code>{escaped}</code>")
-
-    # 12. Restore code blocks with HTML tags
-    for i, code in enumerate(code_blocks):
-        # Escape HTML in code content
-        escaped = code.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-        text = text.replace(f"\x00CB{i}\x00", f"<pre><code>{escaped}</code></pre>")
-
-    return text
+# Telegram limit is 4096 UTF-16 code units; leave some margin
+TELEGRAM_MAX_UTF16_LEN = 4000
 
 
 class TelegramChannel(BaseChannel):
@@ -342,39 +279,48 @@ class TelegramChannel(BaseChannel):
             draft_id = msg.metadata.get("message_id")
             use_draft = is_progress and draft_id and chat_id > 0
 
-            for chunk in split_message(msg.content, TELEGRAM_MAX_MESSAGE_LEN):
+            try:
+                text, entities = convert(msg.content)
+                tg_entities = [TGMessageEntity.de_json(e.to_dict(), None) for e in entities]
+            except Exception:
+                logger.warning("telegramify-markdown convert failed, sending raw text", exc_info=True)
+                text = msg.content
+                tg_entities = []
+
+            chunks = split_entities(text, tg_entities, max_utf16_len=TELEGRAM_MAX_UTF16_LEN) if tg_entities else [(text, [])]
+
+            for chunk_text, chunk_entities in chunks:
                 try:
-                    html = _markdown_to_telegram_html(chunk)
                     if use_draft:
                         await self._app.bot.send_message_draft(
                             chat_id=chat_id,
                             draft_id=draft_id,
-                            text=html,
+                            text=chunk_text,
                             message_thread_id=thread_id,
-                            parse_mode="HTML"
+                            entities=chunk_entities or None,
                         )
                     else:
                         await self._app.bot.send_message(
                             chat_id=chat_id,
-                            text=html,
+                            text=chunk_text,
                             message_thread_id=thread_id,
-                            parse_mode="HTML",
+                            entities=chunk_entities or None,
                             reply_parameters=reply_params
                         )
                 except Exception as e:
-                    logger.warning("HTML parse failed, falling back to plain text: %s", e)
+                    logger.warning("Entity send failed, falling back to plain text: %s", e)
                     try:
                         if use_draft:
                             await self._app.bot.send_message_draft(
                                 chat_id=chat_id,
                                 draft_id=draft_id,
                                 message_thread_id=thread_id,
-                                text=chunk
+                                text=chunk_text,
                             )
                         else:
                             await self._app.bot.send_message(
                                 chat_id=chat_id,
-                                text=chunk,
+                                text=chunk_text,
                                 message_thread_id=thread_id,
                                 reply_parameters=reply_params
                             )
