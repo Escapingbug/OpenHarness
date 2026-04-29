@@ -203,12 +203,18 @@ async def execute_job(
             inbound_content = f"[定时提醒上下文] {context_text}"
 
         # Construct a synthetic inbound message
+        thread_id = job.get("message_thread_id", "")
+        msg_metadata: dict[str, Any] = {"_cron": True}
+        if thread_id:
+            msg_metadata["message_thread_id"] = thread_id
+            msg_metadata["thread_id"] = thread_id
+
         inbound_msg = InboundMessage(
             channel=channel,
             sender_id="cron",
             chat_id=chat_id,
             content=inbound_content,
-            metadata={"_cron": True},
+            metadata=msg_metadata,
         )
 
         # Prefer bridge (handles queuing when session is busy)

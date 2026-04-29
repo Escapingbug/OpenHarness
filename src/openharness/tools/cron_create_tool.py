@@ -88,6 +88,7 @@ class CronCreateTool(BaseTool):
                 "session_key": session_info.get("session_key", ""),
                 "channel": session_info.get("channel", ""),
                 "chat_id": session_info.get("chat_id", ""),
+                "message_thread_id": session_info.get("message_thread_id", ""),
                 "cwd": arguments.cwd or str(context.cwd),
                 "enabled": arguments.enabled,
             }

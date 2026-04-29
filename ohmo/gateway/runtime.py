@@ -415,6 +415,7 @@ class OhmoSessionRuntimePool:
                 "channel": message.channel,
                 "chat_id": message.chat_id,
                 "session_key": session_key,
+                "message_thread_id": message.metadata.get("message_thread_id") or message.metadata.get("thread_id"),
             }
         reply_parts: list[str] = []
         yield GatewayStreamUpdate(
