@@ -245,7 +245,7 @@ class OhmoGatewayBridge:
     async def _process_message(self, message, session_key: str) -> None:
         # Preserve inbound message_id so channels can reply in-thread
         inbound_meta = {
-            k: message.metadata[k] for k in ("message_id", "thread_id") if k in message.metadata
+            k: message.metadata[k] for k in ("message_id", "thread_id", "message_thread_id") if k in message.metadata
         }
         try:
             reply = ""
