@@ -448,3 +448,53 @@ async def test_pending_tables_cleared_on_new_user_message():
     channel._pending_tables.pop(123, None)
 
     assert 123 not in channel._pending_tables
+
+
+@pytest.mark.asyncio
+async def test_reply_parameters_only_on_first_sub_message(monkeypatch):
+    """Only the first sub-message should carry reply_parameters; subsequent
+    parts (table images, text chunks) should flow without quoting."""
+    sent_messages: list[dict] = []
+    sent_photos: list[dict] = []
+
+    class FakeBot:
+        async def send_message(self, **kwargs):
+            sent_messages.append(kwargs)
+
+        async def send_photo(self, **kwargs):
+            sent_photos.append(kwargs)
+
+    channel = TelegramChannel(
+        TelegramConfig(token="token", allow_from=["*"], proxy=None, reply_to_message=True),
+        MessageBus(),
+    )
+    channel._app = SimpleNamespace(bot=FakeBot())
+
+    fake_md2png = SimpleNamespace(
+        render_markdown_image=lambda table_md, theme=None: {"ok": True, "base64": "iVBORw0KGgo="}
+    )
+    monkeypatch.setitem(__import__("sys").modules, "md2png_lite", fake_md2png)
+
+    from openharness.channels.bus.events import OutboundMessage
+
+    await channel.send(
+        OutboundMessage(
+            channel="telegram",
+            chat_id="123",
+            content="Before\n\n| H |\n|---|\n| V |\n\nAfter",
+            metadata={"message_id": 42},
+        )
+    )
+
+    # First message should have reply_parameters
+    first_msg = sent_messages[0]
+    assert "reply_parameters" in first_msg
+    assert first_msg["reply_parameters"].message_id == 42
+
+    # Photo (table image) should NOT have reply_parameters
+    photo_msg = sent_photos[0]
+    assert photo_msg.get("reply_parameters") is None
+
+    # Second text message should NOT have reply_parameters
+    second_msg = sent_messages[1]
+    assert second_msg.get("reply_parameters") is None

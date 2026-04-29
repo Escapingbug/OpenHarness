@@ -334,12 +334,19 @@ class TelegramChannel(BaseChannel):
             else:
                 segments = [("text", msg.content)]
 
+            # Only the very first sub-message should reply-quote the user;
+            # subsequent parts should flow naturally without quoting.
+            is_first = True
+
             for seg_index, (seg_kind, seg_content) in enumerate(segments):
                 if seg_kind == "table":
                     # Collect table markdown for /tables command
                     self._pending_tables.setdefault(chat_id, []).append(seg_content)
+                    # Only reply-quote on the very first sub-message
+                    table_reply = reply_params if is_first else None
+                    is_first = False
                     await self._send_table_images(
-                        [seg_content], chat_id, thread_id, reply_params,
+                        [seg_content], chat_id, thread_id, table_reply,
                     )
                     continue
 
@@ -355,8 +362,13 @@ class TelegramChannel(BaseChannel):
                 chunks = split_entities(text, tg_entities, max_utf16_len=TELEGRAM_MAX_UTF16_LEN) if tg_entities else [(text, [])]
 
                 for index, (chunk_text, chunk_entities) in enumerate(chunks):
-                    # Only attach reply_markup and use draft for the very first chunk
-                    chunk_reply_markup = reply_markup if seg_index == 0 and index == 0 and not use_draft else None
+                    # Only attach reply_markup, reply_parameters, and use draft
+                    # for the very first sub-message so subsequent parts read
+                    # as a continuous flow rather than separate replies.
+                    chunk_reply_params = reply_params if is_first else None
+                    chunk_reply_markup = reply_markup if is_first and not use_draft else None
+                    if is_first:
+                        is_first = False
                     try:
                         if use_draft and seg_index == 0 and index == 0:
                             await self._app.bot.send_message_draft(
@@ -372,7 +384,7 @@ class TelegramChannel(BaseChannel):
                                 text=chunk_text,
                                 message_thread_id=thread_id,
                                 entities=chunk_entities or None,
-                                reply_parameters=reply_params,
+                                reply_parameters=chunk_reply_params,
                                 reply_markup=chunk_reply_markup,
                             )
                     except Exception as e:
@@ -382,7 +394,7 @@ class TelegramChannel(BaseChannel):
                                 chat_id=chat_id,
                                 text=chunk_text,
                                 message_thread_id=thread_id,
-                                reply_parameters=reply_params,
+                                reply_parameters=chunk_reply_params,
                             )
                         except Exception as e2:
                             logger.error("Error sending Telegram message: %s", e2)
