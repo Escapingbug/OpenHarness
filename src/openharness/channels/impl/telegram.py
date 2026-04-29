@@ -3,10 +3,20 @@
 from __future__ import annotations
 
 import asyncio
-
+import base64
 import logging
-from telegram import BotCommand, MessageEntity as TGMessageEntity, ReplyParameters, Update
-from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
+import re
+import tempfile
+
+from telegram import (
+    BotCommand,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    MessageEntity as TGMessageEntity,
+    ReplyParameters,
+    Update,
+)
+from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ContextTypes, MessageHandler, filters
 from telegram.request import HTTPXRequest
 from telegramify_markdown import convert, split_entities
 
@@ -19,6 +29,24 @@ logger = logging.getLogger(__name__)
 
 # Telegram limit is 4096 UTF-16 code units; leave some margin
 TELEGRAM_MAX_UTF16_LEN = 4000
+
+# Regex to extract Markdown tables from raw content (before convert()).
+# Matches lines starting with | and containing the separator row (---).
+_TABLE_BLOCK_RE = re.compile(
+    r"(?:^[ \t]*\|.+\|[ \t]*$\n)+"  # one or more table rows
+    r"(?=^[ \t]*\|[-: |]+\|[ \t]*$\n)"  # lookahead: separator row
+    r"(?:^[ \t]*\|.+\|[ \t]*$\n)*"  # more data rows after separator
+    r"(?:^[ \t]*\|.+\|[ \t]*$)",  # final row
+    re.MULTILINE,
+)
+
+
+def _extract_table_blocks(markdown: str) -> list[str]:
+    """Extract all Markdown table blocks from raw content.
+
+    Returns a list of table markdown strings (preserving original text).
+    """
+    return [m.group(0) for m in _TABLE_BLOCK_RE.finditer(markdown)]
 
 
 class TelegramChannel(BaseChannel):
@@ -45,6 +73,9 @@ class TelegramChannel(BaseChannel):
         BotCommand("memory", "Inspect and manage project memory"),
         BotCommand("agents", "List or inspect agent and teammate tasks"),
         BotCommand("tasks", "Manage background tasks"),
+        BotCommand("permissions", "Show or update permission mode"),
+        BotCommand("allow", "Approve a pending permission request"),
+        BotCommand("deny", "Deny a pending permission request"),
         BotCommand("fast", "Show or update fast mode"),
         BotCommand("effort", "Show or update reasoning effort"),
         BotCommand("export", "Export the current transcript"),
@@ -101,10 +132,14 @@ class TelegramChannel(BaseChannel):
         self._app.add_handler(CommandHandler("memory", self._forward_command))
         self._app.add_handler(CommandHandler("agents", self._forward_command))
         self._app.add_handler(CommandHandler("tasks", self._forward_command))
+        self._app.add_handler(CommandHandler("permissions", self._forward_command))
+        self._app.add_handler(CommandHandler("allow", self._forward_command))
+        self._app.add_handler(CommandHandler("deny", self._forward_command))
         self._app.add_handler(CommandHandler("fast", self._forward_command))
         self._app.add_handler(CommandHandler("effort", self._forward_command))
         self._app.add_handler(CommandHandler("export", self._forward_command))
         self._app.add_handler(CommandHandler("stop", self._forward_command))
+        self._app.add_handler(CallbackQueryHandler(self._on_callback_query, pattern=r"^ohmo_perm:"))
 
         # Catch-all for any other slash commands not explicitly registered
         # above (e.g. /clear, /stats, /hooks, /skills, /resume, etc.).
@@ -159,7 +194,7 @@ class TelegramChannel(BaseChannel):
         """Start the updater's long-polling loop and record activity."""
         self._last_poll_activity = asyncio.get_event_loop().time()
         await self._app.updater.start_polling(
-            allowed_updates=["message"],
+            allowed_updates=["message", "callback_query"],
             drop_pending_updates=drop_pending_updates,
         )
 
@@ -278,6 +313,14 @@ class TelegramChannel(BaseChannel):
             is_progress = msg.metadata.get("_progress", False)
             draft_id = msg.metadata.get("message_id")
             use_draft = is_progress and draft_id and chat_id > 0
+            reply_markup = self._permission_reply_markup(msg.metadata)
+
+            # Render Markdown tables as images and send before the text message.
+            # Users can then read the image on mobile and copy from the pre block.
+            if not is_progress:
+                table_blocks = _extract_table_blocks(msg.content)
+                if table_blocks:
+                    await self._send_table_images(table_blocks, chat_id, thread_id, reply_params)
 
             try:
                 text, entities = convert(msg.content)
@@ -289,7 +332,8 @@ class TelegramChannel(BaseChannel):
 
             chunks = split_entities(text, tg_entities, max_utf16_len=TELEGRAM_MAX_UTF16_LEN) if tg_entities else [(text, [])]
 
-            for chunk_text, chunk_entities in chunks:
+            for index, (chunk_text, chunk_entities) in enumerate(chunks):
+                chunk_reply_markup = reply_markup if index == 0 and not use_draft else None
                 try:
                     if use_draft:
                         await self._app.bot.send_message_draft(
@@ -305,7 +349,8 @@ class TelegramChannel(BaseChannel):
                             text=chunk_text,
                             message_thread_id=thread_id,
                             entities=chunk_entities or None,
-                            reply_parameters=reply_params
+                            reply_parameters=reply_params,
+                            reply_markup=chunk_reply_markup,
                         )
                 except Exception as e:
                     logger.warning("Entity send failed, falling back to plain text: %s", e)
@@ -322,10 +367,65 @@ class TelegramChannel(BaseChannel):
                                 chat_id=chat_id,
                                 text=chunk_text,
                                 message_thread_id=thread_id,
-                                reply_parameters=reply_params
+                                reply_parameters=reply_params,
+                                reply_markup=chunk_reply_markup,
                             )
                     except Exception as e2:
                         logger.error("Error sending Telegram message: %s", e2)
+
+    @staticmethod
+    def _permission_reply_markup(metadata: dict) -> InlineKeyboardMarkup | None:
+        """Return inline approval buttons for gateway permission prompts."""
+        if not metadata.get("_permission_request"):
+            return None
+        request_id = metadata.get("permission_request_id")
+        if not isinstance(request_id, str) or not request_id:
+            return None
+        return InlineKeyboardMarkup(
+            [
+                [
+                    InlineKeyboardButton("Approve", callback_data=f"ohmo_perm:allow:{request_id}"),
+                    InlineKeyboardButton("Deny", callback_data=f"ohmo_perm:deny:{request_id}"),
+                ]
+            ]
+        )
+
+    async def _send_table_images(
+        self,
+        table_blocks: list[str],
+        chat_id: int,
+        thread_id: int | None,
+        reply_params: ReplyParameters | None,
+    ) -> None:
+        """Render Markdown tables as PNG images and send them via send_photo."""
+        try:
+            from md2png_lite import render_markdown_image
+        except ImportError:
+            logger.debug("md2png-lite not installed, skipping table image rendering")
+            return
+
+        for table_md in table_blocks:
+            try:
+                result = render_markdown_image(table_md, theme="github-dark")
+                if not result.get("ok"):
+                    continue
+                img_bytes = base64.b64decode(result["base64"])
+                with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
+                    tmp.write(img_bytes)
+                    tmp_path = tmp.name
+                try:
+                    with open(tmp_path, "rb") as f:
+                        await self._app.bot.send_photo(
+                            chat_id=chat_id,
+                            photo=f,
+                            message_thread_id=thread_id,
+                            reply_parameters=reply_params,
+                        )
+                finally:
+                    import os
+                    os.unlink(tmp_path)
+            except Exception:
+                logger.warning("Failed to render table as image", exc_info=True)
 
     async def _on_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle /start command."""
@@ -368,6 +468,9 @@ class TelegramChannel(BaseChannel):
             "/memory — Inspect and manage project memory\n"
             "/agents — List or inspect agent and teammate tasks\n"
             "/tasks — Manage background tasks\n"
+            "/permissions — Show or update permission mode\n"
+            "/allow — Approve a pending permission request\n"
+            "/deny — Deny a pending permission request\n"
             "/fast — Show or update fast mode\n"
             "/effort — Show or update reasoning effort\n"
             "/export — Export the current transcript\n"
@@ -398,6 +501,46 @@ class TelegramChannel(BaseChannel):
                 "username": update.effective_user.username,
                 "first_name": update.effective_user.first_name,
                 "is_group": message.chat.type != "private",
+            },
+        )
+
+    async def _on_callback_query(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Turn inline permission button clicks into gateway /allow or /deny messages."""
+        query = update.callback_query
+        if not query or not update.effective_user:
+            return
+        data = query.data or ""
+        parts = data.split(":", 2)
+        if len(parts) != 3 or parts[0] != "ohmo_perm" or parts[1] not in {"allow", "deny"}:
+            await query.answer("Unknown permission action.", show_alert=True)
+            return
+
+        message = query.message
+        if message is None:
+            await query.answer("Original permission request is unavailable.", show_alert=True)
+            return
+
+        action = parts[1]
+        request_id = parts[2]
+        command = f"/{action} {request_id}"
+        sender_id = self._sender_id(update.effective_user)
+        await query.answer("Permission response sent.")
+        try:
+            await query.edit_message_reply_markup(reply_markup=None)
+        except Exception:
+            logger.debug("Failed to clear Telegram permission buttons", exc_info=True)
+        await self._handle_message(
+            sender_id=sender_id,
+            chat_id=str(message.chat_id),
+            content=command,
+            metadata={
+                "message_id": message.message_id,
+                "message_thread_id": getattr(message, "message_thread_id", None),
+                "user_id": update.effective_user.id,
+                "username": update.effective_user.username,
+                "first_name": update.effective_user.first_name,
+                "is_group": message.chat.type != "private",
+                "callback_query_id": query.id,
             },
         )
 

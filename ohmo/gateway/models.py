@@ -19,6 +19,7 @@ class GatewayConfig(BaseModel):
     allowed_remote_admin_commands: list[str] = Field(default_factory=list)
     log_level: str = "INFO"
     channel_configs: dict[str, dict] = Field(default_factory=dict)
+    project_dir: str | None = None
 
 
 class GatewayState(BaseModel):
@@ -30,4 +31,3 @@ class GatewayState(BaseModel):
     provider_profile: str = "codex"
     enabled_channels: list[str] = Field(default_factory=list)
     last_error: str | None = None
-

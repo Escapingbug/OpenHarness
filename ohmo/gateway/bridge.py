@@ -87,6 +87,22 @@ class OhmoGatewayBridge:
                 session_key,
                 _content_snippet(message.content),
             )
+            resolve_permission_response = getattr(self._runtime_pool, "resolve_permission_response", None)
+            permission_ack = (
+                resolve_permission_response(message, session_key)
+                if resolve_permission_response is not None
+                else None
+            )
+            if permission_ack is not None:
+                await self._bus.publish_outbound(
+                    OutboundMessage(
+                        channel=message.channel,
+                        chat_id=message.chat_id,
+                        content=permission_ack,
+                        metadata={"_session_key": session_key},
+                    )
+                )
+                continue
             if message.content.strip() == "/stop":
                 await self._handle_stop(message, session_key)
                 continue

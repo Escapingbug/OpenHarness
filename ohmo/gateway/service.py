@@ -31,6 +31,7 @@ from ohmo.workspace import (
     get_state_path,
     get_workspace_root,
     initialize_workspace,
+    resolve_project_dir,
 )
 
 logger = logging.getLogger(__name__)
@@ -41,12 +42,15 @@ class OhmoGatewayService:
     """Foreground/background service wrapper for the personal gateway."""
 
     def __init__(self, cwd: str | Path | None = None, workspace: str | Path | None = None) -> None:
-        self._cwd = str(Path(cwd or Path.cwd()).resolve())
         self._workspace = workspace
-        os.chdir(self._cwd)
         root = initialize_workspace(self._workspace)
         os.environ["OHMO_WORKSPACE"] = str(root)
         self._config = load_gateway_config(self._workspace)
+        self._cwd = resolve_project_dir(
+            explicit_cwd=cwd,
+            config_project_dir=self._config.project_dir,
+            workspace=self._workspace,
+        )
         if self._config.allow_remote_admin_commands and self._config.allowed_remote_admin_commands:
             logger.warning(
                 "ohmo gateway remote administrative commands enabled commands=%s",
@@ -57,6 +61,7 @@ class OhmoGatewayService:
             cwd=self._cwd,
             workspace=self._workspace,
             provider_profile=self._config.provider_profile,
+            permission_request_sender=self._send_permission_request,
         )
         self._stop_event: asyncio.Event | None = None
         self._restart_requested = False
@@ -66,6 +71,37 @@ class OhmoGatewayService:
             restart_gateway=self.request_restart,
         )
         self._manager = ChannelManager(build_channel_manager_config(self._config), self._bus)
+
+    async def _send_permission_request(
+        self,
+        message,
+        session_key: str,
+        request_id: str,
+        tool_name: str,
+        reason: str,
+    ) -> None:
+        metadata = {
+            "_session_key": session_key,
+            "_permission_request": True,
+            "permission_request_id": request_id,
+            "permission_tool_name": tool_name,
+            "message_id": message.metadata.get("message_id"),
+            "message_thread_id": message.metadata.get("message_thread_id"),
+            "thread_id": message.metadata.get("thread_id"),
+        }
+        metadata = {key: value for key, value in metadata.items() if value is not None}
+        await self._bus.publish_outbound(
+            OutboundMessage(
+                channel=message.channel,
+                chat_id=message.chat_id,
+                content=(
+                    f"Permission required for `{tool_name}`.\n"
+                    f"{reason}\n\n"
+                    f"Reply `/allow {request_id}` to approve or `/deny {request_id}` to reject."
+                ),
+                metadata=metadata,
+            )
+        )
 
     @property
     def pid_file(self) -> Path:
@@ -223,7 +259,6 @@ def start_gateway_process(cwd: str | Path | None = None, workspace: str | Path |
     env["PYTHONPATH"] = os.pathsep.join(pythonpath_entries)
 
     popen_kwargs: dict = {
-        "cwd": service._cwd,
         "stdout": None,
         "stderr": None,
         "env": env,
@@ -234,23 +269,22 @@ def start_gateway_process(cwd: str | Path | None = None, workspace: str | Path |
     else:
         popen_kwargs["start_new_session"] = True
 
+    cmd = [
+        sys.executable,
+        "-m",
+        "ohmo",
+        "gateway",
+        "run",
+        "--workspace",
+        str(get_workspace_root(workspace)),
+    ]
+    if cwd:
+        cmd.extend(["--cwd", str(cwd)])
+
     with service.log_file.open("a", encoding="utf-8") as log_file:
         popen_kwargs["stdout"] = log_file
         popen_kwargs["stderr"] = log_file
-        process = subprocess_popen(
-            [
-                sys.executable,
-                "-m",
-                "ohmo",
-                "gateway",
-                "run",
-                "--cwd",
-                service._cwd,
-                "--workspace",
-                str(get_workspace_root(workspace)),
-            ],
-            **popen_kwargs,
-        )
+        process = subprocess_popen(cmd, **popen_kwargs)
     return process.pid
 
 
@@ -336,9 +370,9 @@ def _iter_workspace_gateway_pids(workspace: str | Path | None = None) -> list[in
         return pids
 
 
-def stop_gateway_process(cwd: str | Path | None = None, workspace: str | Path | None = None) -> bool:
+def stop_gateway_process(workspace: str | Path | None = None) -> bool:
     """Stop the background gateway process if present."""
-    service = OhmoGatewayService(cwd, workspace)
+    service = OhmoGatewayService(workspace=workspace)
     pids: list[int] = []
     if service.pid_file.exists():
         try:
@@ -372,7 +406,7 @@ def stop_gateway_process(cwd: str | Path | None = None, workspace: str | Path | 
 
 def gateway_status(cwd: str | Path | None = None, workspace: str | Path | None = None) -> GatewayState:
     """Load the last known gateway state."""
-    service = OhmoGatewayService(cwd, workspace)
+    service = OhmoGatewayService(cwd=cwd, workspace=workspace)
     live_pid: int | None = None
     if service.pid_file.exists():
         try:

@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 import openharness.commands.registry as registry_module
-from openharness.commands.registry import CommandContext, create_default_command_registry
+from openharness.commands.registry import CommandContext, CommandRegistry, SlashCommand, create_default_command_registry
 from openharness.autopilot import RepoVerificationStep
 from openharness.config.paths import get_feedback_log_path, get_project_issue_file, get_project_pr_comments_file
 from openharness.config.settings import load_settings, save_settings, Settings
@@ -883,3 +883,31 @@ def test_help_and_list_do_not_duplicate_aliases():
     help_text = reg.help_text()
     assert help_text.count("/exit ") == 1
     assert "/quit" not in help_text
+
+
+def test_lookup_strips_botname_suffix():
+    """Telegram groups send /command@botname; lookup should resolve to the command."""
+    reg = CommandRegistry()
+
+    async def _noop(args: str, ctx: CommandContext) -> registry_module.CommandResult:
+        return registry_module.CommandResult(message="ok")
+
+    reg.register(SlashCommand(name="compact", description="test", handler=_noop))
+
+    # Normal form
+    result = reg.lookup("/compact")
+    assert result is not None
+    assert result[0].name == "compact"
+    assert result[1] == ""
+
+    # Telegram group form: /compact@mybot
+    result = reg.lookup("/compact@mybot")
+    assert result is not None
+    assert result[0].name == "compact"
+    assert result[1] == ""
+
+    # Telegram group form with args: /compact@mybot some args
+    result = reg.lookup("/compact@mybot some args")
+    assert result is not None
+    assert result[0].name == "compact"
+    assert result[1] == "some args"

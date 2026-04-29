@@ -112,7 +112,8 @@ async def test_telegram_registers_stop_command(monkeypatch):
     expected_commands = [
         "start", "help", "new", "compact", "status", "summary",
         "cost", "usage", "model", "provider", "config", "memory",
-        "agents", "tasks", "fast", "effort", "export", "stop",
+        "agents", "tasks", "permissions", "allow", "deny",
+        "fast", "effort", "export", "stop",
     ]
     for cmd in expected_commands:
         assert cmd in commands, f"Expected /{cmd} to be registered"
@@ -133,6 +134,82 @@ def test_telegram_polling_watchdog_does_not_restart_on_idle_time():
     channel._last_poll_activity = 1.0
 
     assert channel._needs_polling_restart() is False
+
+
+@pytest.mark.asyncio
+async def test_telegram_permission_request_renders_inline_buttons():
+    sent: dict[str, object] = {}
+
+    class FakeBot:
+        async def send_message(self, **kwargs):
+            sent.update(kwargs)
+
+    channel = TelegramChannel(
+        TelegramConfig(token="token", allow_from=["*"], proxy=None, reply_to_message=False),
+        MessageBus(),
+    )
+    channel._app = SimpleNamespace(bot=FakeBot())
+
+    from openharness.channels.bus.events import OutboundMessage
+
+    await channel.send(
+        OutboundMessage(
+            channel="telegram",
+            chat_id="123",
+            content="Permission required for `bash`.",
+            metadata={
+                "_permission_request": True,
+                "permission_request_id": "abc123",
+            },
+        )
+    )
+
+    markup = sent["reply_markup"]
+    assert markup.inline_keyboard[0][0].text == "Approve"
+    assert markup.inline_keyboard[0][0].callback_data == "ohmo_perm:allow:abc123"
+    assert markup.inline_keyboard[0][1].text == "Deny"
+    assert markup.inline_keyboard[0][1].callback_data == "ohmo_perm:deny:abc123"
+
+
+@pytest.mark.asyncio
+async def test_telegram_permission_callback_forwards_allow_command():
+    bus = MessageBus()
+    channel = TelegramChannel(
+        TelegramConfig(token="token", allow_from=["123"], proxy=None, reply_to_message=False),
+        bus,
+    )
+    answered: list[str] = []
+    edited: list[object] = []
+
+    class FakeQuery:
+        id = "query1"
+        data = "ohmo_perm:allow:abc123"
+        message = SimpleNamespace(
+            chat_id=456,
+            message_id=789,
+            message_thread_id=None,
+            chat=SimpleNamespace(type="private"),
+        )
+
+        async def answer(self, text, show_alert=False):
+            answered.append(text)
+
+        async def edit_message_reply_markup(self, reply_markup=None):
+            edited.append(reply_markup)
+
+    update = SimpleNamespace(
+        callback_query=FakeQuery(),
+        effective_user=SimpleNamespace(id=123, username=None, first_name="Test"),
+    )
+
+    await channel._on_callback_query(update, SimpleNamespace())
+    msg = await asyncio.wait_for(bus.consume_inbound(), timeout=1.0)
+
+    assert answered == ["Permission response sent."]
+    assert edited == [None]
+    assert msg.content == "/allow abc123"
+    assert msg.chat_id == "456"
+    assert msg.sender_id == "123"
 
 
 @pytest.mark.asyncio

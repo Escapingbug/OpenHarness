@@ -306,6 +306,10 @@ def _run_gateway_config_wizard(workspace: str | Path) -> GatewayConfig:
         "Send tool hints to channels?",
         default=existing.send_tool_hints,
     )
+    project_dir = _text_prompt(
+        "Default project working directory (leave blank to use OHMO_PROJECT_DIR env or workspace root)",
+        default=existing.project_dir or "",
+    ) or None
     allow_remote_admin_commands = _confirm_prompt(
         "Allow explicitly listed administrative slash commands from remote channels?",
         default=existing.allow_remote_admin_commands,
@@ -329,6 +333,7 @@ def _run_gateway_config_wizard(workspace: str | Path) -> GatewayConfig:
             "channel_configs": channel_configs,
             "send_progress": send_progress,
             "send_tool_hints": send_tool_hints,
+            "project_dir": project_dir,
             "allow_remote_admin_commands": allow_remote_admin_commands,
             "allowed_remote_admin_commands": allowed_remote_admin_commands,
         }
@@ -338,6 +343,8 @@ def _run_gateway_config_wizard(workspace: str | Path) -> GatewayConfig:
 
 
 def _print_gateway_config_summary(config: GatewayConfig) -> None:
+    if config.project_dir:
+        print(f"Project directory: {config.project_dir}")
     if config.enabled_channels:
         print(
             "Configured channels: "
@@ -364,15 +371,15 @@ def _print_gateway_config_summary(config: GatewayConfig) -> None:
         print("Remote admin commands remain local-only.")
 
 
-def _maybe_restart_gateway(*, cwd: str | Path, workspace: str | Path) -> None:
-    state = gateway_status(cwd, workspace)
+def _maybe_restart_gateway(*, workspace: str | Path) -> None:
+    state = gateway_status(workspace=workspace)
     if not state.running:
         return
     if not _confirm_prompt("Gateway is running. Restart now to apply changes?", default=True):
         print("Configuration saved. Restart later with `ohmo gateway restart`.")
         return
-    stop_gateway_process(cwd, workspace)
-    pid = start_gateway_process(cwd, workspace)
+    stop_gateway_process(workspace)
+    pid = start_gateway_process(workspace=workspace)
     print(f"ohmo gateway restarted (pid={pid})")
 
 
@@ -507,7 +514,7 @@ def config_cmd(
     config = _run_gateway_config_wizard(workspace_root)
     _print_gateway_config_summary(config)
     print(f"Saved gateway config to {get_gateway_config_path(workspace_root)}")
-    _maybe_restart_gateway(cwd=cwd_path, workspace=workspace_root)
+    _maybe_restart_gateway(workspace=workspace_root)
 
 
 @app.command("doctor")
@@ -604,7 +611,7 @@ def user_edit_cmd(
 
 @gateway_app.command("run")
 def gateway_run_cmd(
-    cwd: str = typer.Option(str(Path.cwd()), "--cwd", help="Project working directory"),
+    cwd: str | None = typer.Option(None, "--cwd", help="Project working directory (overrides config/env)"),
     workspace: str | None = typer.Option(None, "--workspace", help=_WORKSPACE_HELP),
 ) -> None:
     """Run the ohmo gateway in the foreground."""
@@ -615,7 +622,7 @@ def gateway_run_cmd(
 
 @gateway_app.command("start")
 def gateway_start_cmd(
-    cwd: str = typer.Option(str(Path.cwd()), "--cwd", help="Project working directory"),
+    cwd: str | None = typer.Option(None, "--cwd", help="Project working directory (overrides config/env)"),
     workspace: str | None = typer.Option(None, "--workspace", help=_WORKSPACE_HELP),
 ) -> None:
     pid = start_gateway_process(cwd, workspace)
@@ -624,10 +631,9 @@ def gateway_start_cmd(
 
 @gateway_app.command("stop")
 def gateway_stop_cmd(
-    cwd: str = typer.Option(str(Path.cwd()), "--cwd", help="Project working directory"),
     workspace: str | None = typer.Option(None, "--workspace", help=_WORKSPACE_HELP),
 ) -> None:
-    if stop_gateway_process(cwd, workspace):
+    if stop_gateway_process(workspace):
         print("ohmo gateway stopped.")
         return
     print("ohmo gateway is not running.")
@@ -635,18 +641,17 @@ def gateway_stop_cmd(
 
 @gateway_app.command("restart")
 def gateway_restart_cmd(
-    cwd: str = typer.Option(str(Path.cwd()), "--cwd", help="Project working directory"),
+    cwd: str | None = typer.Option(None, "--cwd", help="Project working directory (overrides config/env)"),
     workspace: str | None = typer.Option(None, "--workspace", help=_WORKSPACE_HELP),
 ) -> None:
-    stop_gateway_process(cwd, workspace)
+    stop_gateway_process(workspace)
     pid = start_gateway_process(cwd, workspace)
     print(f"ohmo gateway restarted (pid={pid})")
 
 
 @gateway_app.command("status")
 def gateway_status_cmd(
-    cwd: str = typer.Option(str(Path.cwd()), "--cwd", help="Project working directory"),
     workspace: str | None = typer.Option(None, "--workspace", help=_WORKSPACE_HELP),
 ) -> None:
-    state = gateway_status(cwd, workspace)
+    state = gateway_status(workspace=workspace)
     print(state.model_dump_json(indent=2))

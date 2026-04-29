@@ -111,7 +111,7 @@ def test_gateway_status_prefers_live_config_over_stale_state(tmp_path):
         + "\n",
         encoding="utf-8",
     )
-    state = gateway_status(tmp_path, workspace)
+    state = gateway_status(workspace=workspace)
     assert state.running is False
     assert state.provider_profile == "codex"
     assert state.enabled_channels == ["feishu"]
@@ -138,7 +138,7 @@ def test_stop_gateway_process_kills_matching_workspace_processes(tmp_path, monke
     monkeypatch.setattr("ohmo.gateway.service._pid_is_running", lambda pid: True)
     monkeypatch.setattr("ohmo.gateway.service.os.kill", lambda pid, sig: killed.append(pid))
 
-    assert stop_gateway_process(tmp_path, workspace) is True
+    assert stop_gateway_process(workspace) is True
     assert killed == [123, 456]
 
 
@@ -532,7 +532,8 @@ async def test_runtime_pool_blocks_local_only_commands_from_remote_messages(tmp_
 
     assert handler_called is False
     assert updates[-1].kind == "final"
-    assert updates[-1].text == "/permissions is only available in the local OpenHarness UI."
+    assert updates[-1].text.startswith("/permissions is only available in the local OpenHarness UI")
+    assert "/allow <request_id>" in updates[-1].text
 
 
 @pytest.mark.asyncio
@@ -580,7 +581,7 @@ async def test_runtime_pool_blocks_bridge_spawn_from_remote_messages(tmp_path, m
 
     assert handler_called is False
     assert updates[-1].kind == "final"
-    assert updates[-1].text == "/bridge is only available in the local OpenHarness UI."
+    assert updates[-1].text.startswith("/bridge is only available in the local OpenHarness UI")
 
 
 @pytest.mark.asyncio
@@ -648,6 +649,186 @@ async def test_runtime_pool_allows_opted_in_remote_admin_commands(tmp_path, monk
     assert updates[-1].kind == "final"
     assert updates[-1].text == "ran with full_auto"
     assert "remote administrative command accepted" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_runtime_pool_allows_wildcard_remote_admin_commands(tmp_path, monkeypatch):
+    workspace = tmp_path / ".ohmo-home"
+    initialize_workspace(workspace)
+    save_gateway_config(
+        GatewayConfig(
+            provider_profile="codex",
+            allow_remote_admin_commands=True,
+            allowed_remote_admin_commands=["*"],
+        ),
+        workspace,
+    )
+    handler_called = False
+
+    async def allowed_handler(args, context):
+        nonlocal handler_called
+        handler_called = True
+        return CommandResult(message=f"ran with {args}")
+
+    async def fake_build_runtime(**kwargs):
+        class FakeEngine:
+            messages = []
+            total_usage = UsageSnapshot()
+
+            def set_system_prompt(self, prompt):
+                return None
+
+        command = SlashCommand(
+            "permissions",
+            "Show or update permission mode",
+            allowed_handler,
+            remote_invocable=False,
+            remote_admin_opt_in=True,
+        )
+        return SimpleNamespace(
+            engine=FakeEngine(),
+            session_id="sess123",
+            current_settings=lambda: SimpleNamespace(model="gpt-5.4"),
+            commands=SimpleNamespace(lookup=lambda raw: (command, "full_auto")),
+            hook_summary=lambda: "",
+            mcp_summary=lambda: "",
+            plugin_summary=lambda: "",
+            cwd=str(tmp_path),
+            tool_registry=None,
+            app_state=None,
+            session_backend=None,
+            extra_skill_dirs=(),
+            extra_plugin_roots=(),
+        )
+
+    async def fake_start_runtime(bundle):
+        return None
+
+    monkeypatch.setattr("ohmo.gateway.runtime.build_runtime", fake_build_runtime)
+    monkeypatch.setattr("ohmo.gateway.runtime.start_runtime", fake_start_runtime)
+
+    pool = OhmoSessionRuntimePool(cwd=tmp_path, workspace=workspace, provider_profile="codex")
+    message = InboundMessage(channel="feishu", sender_id="u1", chat_id="c1", content="/permissions full_auto")
+    updates = [u async for u in pool.stream_message(message, "feishu:c1")]
+
+    assert handler_called is True
+    assert updates[-1].text == "ran with full_auto"
+
+
+@pytest.mark.asyncio
+async def test_runtime_pool_passes_gateway_permission_mode_to_runtime(tmp_path, monkeypatch):
+    workspace = tmp_path / ".ohmo-home"
+    initialize_workspace(workspace)
+    save_gateway_config(
+        GatewayConfig(provider_profile="codex", permission_mode="full_auto"),
+        workspace,
+    )
+    captured: dict[str, object] = {}
+
+    async def fake_build_runtime(**kwargs):
+        captured.update(kwargs)
+
+        class FakeEngine:
+            messages = []
+            total_usage = UsageSnapshot()
+
+            def set_system_prompt(self, prompt):
+                return None
+
+        return SimpleNamespace(
+            engine=FakeEngine(),
+            session_id="sess123",
+            current_settings=lambda: SimpleNamespace(model="gpt-5.4"),
+            commands=SimpleNamespace(lookup=lambda raw: None),
+        )
+
+    async def fake_start_runtime(bundle):
+        return None
+
+    monkeypatch.setattr("ohmo.gateway.runtime.build_runtime", fake_build_runtime)
+    monkeypatch.setattr("ohmo.gateway.runtime.start_runtime", fake_start_runtime)
+
+    pool = OhmoSessionRuntimePool(cwd=tmp_path, workspace=workspace, provider_profile="codex")
+    await pool.get_bundle("telegram:c1:u1", latest_user_prompt="hello")
+
+    assert captured["permission_mode"] == "full_auto"
+    assert callable(captured["permission_prompt"])
+
+
+@pytest.mark.asyncio
+async def test_runtime_pool_remote_permission_prompt_can_be_approved(tmp_path, monkeypatch):
+    workspace = tmp_path / ".ohmo-home"
+    initialize_workspace(workspace)
+    request_seen = asyncio.Event()
+    requests: list[tuple[InboundMessage, str, str, str, str]] = []
+
+    async def fake_permission_sender(message, session_key, request_id, tool_name, reason):
+        requests.append((message, session_key, request_id, tool_name, reason))
+        request_seen.set()
+
+    async def fake_build_runtime(**kwargs):
+        permission_prompt = kwargs["permission_prompt"]
+
+        class FakeEngine:
+            messages = []
+            total_usage = UsageSnapshot()
+            model = "gpt-5.4"
+
+            def set_system_prompt(self, prompt):
+                return None
+
+            async def submit_message(self, content):
+                approved = await permission_prompt("bash", "Mutating tools require confirmation")
+                yield AssistantTextDelta(text="approved" if approved else "denied")
+                yield AssistantTurnComplete(
+                    message=ConversationMessage(
+                        role="assistant",
+                        content=[TextBlock(text="approved" if approved else "denied")],
+                    ),
+                    usage=UsageSnapshot(),
+                )
+
+        return SimpleNamespace(
+            engine=FakeEngine(),
+            session_id="sess123",
+            current_settings=lambda: SimpleNamespace(model="gpt-5.4"),
+            commands=SimpleNamespace(lookup=lambda raw: None),
+        )
+
+    async def fake_start_runtime(bundle):
+        return None
+
+    monkeypatch.setattr("ohmo.gateway.runtime.build_runtime", fake_build_runtime)
+    monkeypatch.setattr("ohmo.gateway.runtime.start_runtime", fake_start_runtime)
+
+    pool = OhmoSessionRuntimePool(
+        cwd=tmp_path,
+        workspace=workspace,
+        provider_profile="codex",
+        permission_request_sender=fake_permission_sender,
+    )
+    session_key = "telegram:c1:u1"
+    message = InboundMessage(channel="telegram", sender_id="u1", chat_id="c1", content="please run this")
+
+    async def collect_updates():
+        return [u async for u in pool.stream_message(message, session_key)]
+
+    task = asyncio.create_task(collect_updates())
+    await asyncio.wait_for(request_seen.wait(), timeout=1.0)
+
+    _, _, request_id, tool_name, reason = requests[0]
+    assert tool_name == "bash"
+    assert "confirmation" in reason
+
+    ack = pool.resolve_permission_response(
+        InboundMessage(channel="telegram", sender_id="u1", chat_id="c1", content=f"/allow {request_id}"),
+        session_key,
+    )
+    updates = await asyncio.wait_for(task, timeout=1.0)
+
+    assert "approved" in ack
+    assert updates[-1].kind == "final"
+    assert updates[-1].text == "approved"
 
 
 @pytest.mark.asyncio
@@ -762,6 +943,38 @@ async def test_gateway_bridge_publishes_progress_updates():
     assert second.content.startswith("🛠️ ")
     assert "web_fetch" in second.content
     assert third.content == "Done"
+
+
+@pytest.mark.asyncio
+async def test_gateway_bridge_permission_response_does_not_interrupt_session():
+    bus = MessageBus()
+    stream_called = False
+
+    class FakeRuntimePool:
+        def resolve_permission_response(self, message, session_key):
+            return "Permission request `abc123` approved for `bash`."
+
+        async def stream_message(self, message, session_key):
+            nonlocal stream_called
+            stream_called = True
+            if False:
+                yield
+
+    bridge = OhmoGatewayBridge(bus=bus, runtime_pool=FakeRuntimePool())
+    task = asyncio.create_task(bridge.run())
+    try:
+        await bus.publish_inbound(
+            InboundMessage(channel="telegram", sender_id="u1", chat_id="c1", content="/allow abc123")
+        )
+        ack = await asyncio.wait_for(bus.consume_outbound(), timeout=1.0)
+    finally:
+        bridge.stop()
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+    assert ack.content == "Permission request `abc123` approved for `bash`."
+    assert stream_called is False
 
 
 @pytest.mark.asyncio

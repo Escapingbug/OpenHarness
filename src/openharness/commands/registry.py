@@ -132,6 +132,8 @@ class CommandRegistry:
         if not raw_input.startswith("/"):
             return None
         name, _, args = raw_input[1:].partition(" ")
+        # Strip @botname suffix that Telegram adds in groups (e.g. /compact@mybot)
+        name, _, _ = name.partition("@")
         command = self._commands.get(name)
         if command is None:
             return None

@@ -244,6 +244,32 @@ def ensure_workspace(workspace: str | Path | None = None) -> Path:
     return root
 
 
+def resolve_project_dir(
+    *,
+    explicit_cwd: str | Path | None = None,
+    config_project_dir: str | None = None,
+    workspace: str | Path | None = None,
+) -> str:
+    """Resolve the project working directory for a gateway session.
+
+    Priority order:
+    1. Explicit ``cwd`` argument (e.g. ``--cwd`` CLI flag)
+    2. ``GatewayConfig.project_dir`` from ``gateway.json``
+    3. ``OHMO_PROJECT_DIR`` environment variable
+    4. Workspace root (``~/.ohmo`` by default) as a deterministic fallback
+
+    Unlike ``Path.cwd()``, this never depends on where the process was started.
+    """
+    if explicit_cwd:
+        return str(Path(explicit_cwd).expanduser().resolve())
+    if config_project_dir:
+        return str(Path(config_project_dir).expanduser().resolve())
+    env_dir = os.environ.get("OHMO_PROJECT_DIR")
+    if env_dir:
+        return str(Path(env_dir).expanduser().resolve())
+    return str(get_workspace_root(workspace))
+
+
 def initialize_workspace(workspace: str | Path | None = None) -> Path:
     """Create the workspace and seed template files when missing."""
     root = ensure_workspace(workspace)
@@ -287,6 +313,7 @@ def initialize_workspace(workspace: str | Path | None = None) -> Path:
                     "allowed_remote_admin_commands": [],
                     "log_level": "INFO",
                     "channel_configs": {},
+                    "project_dir": None,
                 },
                 indent=2,
             )

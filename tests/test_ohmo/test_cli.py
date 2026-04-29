@@ -65,6 +65,7 @@ def test_ohmo_init_interactive_writes_gateway_config(tmp_path: Path, monkeypatch
             "n",  # feishu
             "y",  # send_progress
             "y",  # send_tool_hints
+            "",   # project_dir (blank = use env/workspace root)
             "n",  # allow_remote_admin_commands
         ]
     )
@@ -93,6 +94,7 @@ def test_ohmo_init_interactive_allows_blank_allow_from_for_secure_default(tmp_pa
             "n",  # feishu
             "y",  # send_progress
             "y",  # send_tool_hints
+            "",   # project_dir (blank)
             "n",  # allow_remote_admin_commands
         ]
     )
@@ -123,6 +125,7 @@ def test_ohmo_init_interactive_writes_feishu_gateway_config(tmp_path: Path, monk
             "OK",        # react_emoji
             "y",         # send_progress
             "n",         # send_tool_hints
+            "",           # project_dir (blank)
             "n",         # allow_remote_admin_commands
         ]
     )
@@ -143,9 +146,9 @@ def test_ohmo_config_interactive_can_restart_gateway(tmp_path: Path, monkeypatch
     runner.invoke(app, ["init", "--workspace", str(workspace), "--no-interactive"])
     monkeypatch.setattr("sys.stdin.isatty", lambda: True)
     monkeypatch.setattr("sys.stdout.isatty", lambda: True)
-    monkeypatch.setattr("ohmo.cli.gateway_status", lambda cwd, workspace: type("State", (), {"running": True})())
-    monkeypatch.setattr("ohmo.cli.stop_gateway_process", lambda cwd, workspace: True)
-    monkeypatch.setattr("ohmo.cli.start_gateway_process", lambda cwd, workspace: 4321)
+    monkeypatch.setattr("ohmo.cli.gateway_status", lambda *, workspace: type("State", (), {"running": True})())
+    monkeypatch.setattr("ohmo.cli.stop_gateway_process", lambda workspace=None: True)
+    monkeypatch.setattr("ohmo.cli.start_gateway_process", lambda cwd=None, workspace=None: 4321)
     user_input = "\n".join(
         [
             "4",          # provider profile -> codex
@@ -161,6 +164,7 @@ def test_ohmo_config_interactive_can_restart_gateway(tmp_path: Path, monkeypatch
             "OK",         # react_emoji
             "y",          # send_progress
             "y",          # send_tool_hints
+            "",           # project_dir (blank)
             "n",          # allow_remote_admin_commands
             "y",          # restart gateway
         ]
@@ -192,7 +196,7 @@ def test_ohmo_config_keeps_existing_channel_when_not_reconfigured(tmp_path: Path
 
     monkeypatch.setattr("sys.stdin.isatty", lambda: True)
     monkeypatch.setattr("sys.stdout.isatty", lambda: True)
-    monkeypatch.setattr("ohmo.cli.gateway_status", lambda cwd, workspace: type("State", (), {"running": False})())
+    monkeypatch.setattr("ohmo.cli.gateway_status", lambda *, workspace: type("State", (), {"running": False})())
     user_input = "\n".join(
         [
             "4",  # provider profile -> codex
@@ -202,6 +206,7 @@ def test_ohmo_config_keeps_existing_channel_when_not_reconfigured(tmp_path: Path
             "n",  # reconfigure feishu? keep existing
             "y",  # send_progress
             "y",  # send_tool_hints
+            "",   # project_dir (blank)
             "n",  # allow_remote_admin_commands
         ]
     )
