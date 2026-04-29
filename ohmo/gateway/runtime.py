@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import asyncio
 import hashlib
 import logging
 import mimetypes
@@ -10,6 +11,8 @@ from pathlib import Path
 import json
 import os
 import string
+from collections.abc import Awaitable, Callable
+from uuid import uuid4
 
 from openharness.channels.bus.events import InboundMessage
 from openharness.commands import CommandContext, CommandResult
@@ -38,6 +41,7 @@ from ohmo.session_storage import OhmoSessionBackend
 from ohmo.workspace import get_plugins_dir, get_skills_dir, initialize_workspace
 
 logger = logging.getLogger(__name__)
+PermissionRequestSender = Callable[[InboundMessage, str, str, str, str], Awaitable[None]]
 
 _CHANNEL_THINKING_PHRASES = (
     "🤔 想一想…",
@@ -70,6 +74,13 @@ class GatewayStreamUpdate:
     media: tuple[str, ...] = ()
 
 
+@dataclass
+class _PendingPermissionRequest:
+    session_key: str
+    tool_name: str
+    future: asyncio.Future[bool]
+
+
 class OhmoSessionRuntimePool:
     """Maintain one runtime bundle per chat/thread session."""
 
@@ -81,6 +92,7 @@ class OhmoSessionRuntimePool:
         provider_profile: str,
         model: str | None = None,
         max_turns: int | None = None,
+        permission_request_sender: PermissionRequestSender | None = None,
     ) -> None:
         self._cwd = str(Path(cwd).resolve())
         self._workspace = workspace
@@ -91,6 +103,9 @@ class OhmoSessionRuntimePool:
         self._gateway_config = load_gateway_config(self._workspace)
         self._session_backend = OhmoSessionBackend(self._workspace)
         self._bundles: dict[str, RuntimeBundle] = {}
+        self._permission_request_sender = permission_request_sender
+        self._pending_permission_requests: dict[str, _PendingPermissionRequest] = {}
+        self._active_messages: dict[str, InboundMessage] = {}
 
     @property
     def active_sessions(self) -> int:
@@ -106,7 +121,47 @@ class OhmoSessionRuntimePool:
             for name in self._gateway_config.allowed_remote_admin_commands
             if str(name).strip()
         }
+        if "*" in allowed:
+            return True
         return command.name.lower() in allowed
+
+    async def _request_permission(self, session_key: str, tool_name: str, reason: str) -> bool:
+        message = self._active_messages.get(session_key)
+        if message is None or self._permission_request_sender is None:
+            return False
+        request_id = uuid4().hex[:12]
+        future = asyncio.get_running_loop().create_future()
+        self._pending_permission_requests[request_id] = _PendingPermissionRequest(
+            session_key=session_key,
+            tool_name=tool_name,
+            future=future,
+        )
+        try:
+            await self._permission_request_sender(message, session_key, request_id, tool_name, reason)
+            return await future
+        finally:
+            self._pending_permission_requests.pop(request_id, None)
+
+    def _permission_prompt_for_session(self, session_key: str):
+        async def _permission_prompt(tool_name: str, reason: str) -> bool:
+            return await self._request_permission(session_key, tool_name, reason)
+
+        return _permission_prompt
+
+    def resolve_permission_response(self, message: InboundMessage, session_key: str) -> str | None:
+        """Resolve a pending remote permission prompt from /allow or /deny."""
+        tokens = message.content.strip().split(maxsplit=1)
+        if not tokens or tokens[0] not in {"/allow", "/deny"} or len(tokens) != 2:
+            return None
+        request_id = tokens[1].strip()
+        pending = self._pending_permission_requests.get(request_id)
+        if pending is None or pending.session_key != session_key:
+            return f"Permission request `{request_id}` was not found or has already expired."
+        approved = tokens[0] == "/allow"
+        if not pending.future.done():
+            pending.future.set_result(approved)
+        action = "approved" if approved else "denied"
+        return f"Permission request `{request_id}` {action} for `{pending.tool_name}`."
 
     async def get_bundle(self, session_key: str, latest_user_prompt: str | None = None) -> RuntimeBundle:
         """Return an existing bundle or create a new one."""
@@ -129,11 +184,14 @@ class OhmoSessionRuntimePool:
             _content_snippet(latest_user_prompt or ""),
         )
         bundle = await build_runtime(
+            cwd=self._cwd,
             model=self._model,
             max_turns=self._max_turns,
             system_prompt=build_ohmo_system_prompt(self._cwd, workspace=self._workspace, extra_prompt=None),
             active_profile=self._provider_profile,
             session_backend=self._session_backend,
+            permission_mode=self._gateway_config.permission_mode,
+            permission_prompt=self._permission_prompt_for_session(session_key),
             enforce_max_turns=self._max_turns is not None,
             restore_messages=snapshot.get("messages") if snapshot else None,
             restore_tool_metadata=snapshot.get("tool_metadata") if snapshot else None,
@@ -187,6 +245,7 @@ class OhmoSessionRuntimePool:
         """Submit an inbound channel message and yield progress + final reply updates."""
         user_message = _build_inbound_user_message(message)
         user_prompt = user_message.text
+        self._active_messages[session_key] = message
         bundle = await self.get_bundle(session_key, latest_user_prompt=user_prompt)
         logger.info(
             "ohmo runtime processing start channel=%s chat_id=%s session_key=%s session_id=%s content=%r",
@@ -212,7 +271,11 @@ class OhmoSessionRuntimePool:
                 )
             if not remote_allowed:
                 result = CommandResult(
-                    message=f"/{command.name} is only available in the local OpenHarness UI."
+                    message=(
+                        f"/{command.name} is only available in the local OpenHarness UI. "
+                        "Remote admin commands require gateway config opt-in; "
+                        "/allow <request_id> only approves pending tool permission prompts."
+                    )
                 )
                 async for update in self._stream_command_result(
                     bundle=bundle,
@@ -569,6 +632,8 @@ class OhmoSessionRuntimePool:
             enforce_max_turns=self._max_turns is not None,
             restore_messages=[message.model_dump(mode="json") for message in snapshot],
             restore_tool_metadata=getattr(bundle.engine, "tool_metadata", {}) or {},
+            permission_mode=self._gateway_config.permission_mode,
+            permission_prompt=self._permission_prompt_for_session(session_key),
             extra_skill_dirs=(str(get_skills_dir(self._workspace)),),
             extra_plugin_roots=(str(get_plugins_dir(self._workspace)),),
         )
