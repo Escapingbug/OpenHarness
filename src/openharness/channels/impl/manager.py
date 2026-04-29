@@ -12,6 +12,8 @@ from openharness.channels.impl.base import BaseChannel
 from openharness.config.schema import Config
 
 logger = logging.getLogger(__name__)
+CHANNEL_RESTART_INITIAL_DELAY = 1.0
+CHANNEL_RESTART_MAX_DELAY = 30.0
 
 
 class ChannelManager:
@@ -161,11 +163,23 @@ class ChannelManager:
                 )
 
     async def _start_channel(self, name: str, channel: BaseChannel) -> None:
-        """Start a channel and log any exceptions."""
-        try:
-            await channel.start()
-        except Exception as e:
-            logger.error("Failed to start channel %s: %s", name, e)
+        """Start a channel, restarting it after unexpected failures."""
+        delay = CHANNEL_RESTART_INITIAL_DELAY
+        while True:
+            try:
+                await channel.start()
+                logger.info("Channel %s stopped", name)
+                return
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("Channel %s crashed; restarting in %.1fs", name, delay)
+                try:
+                    await channel.stop()
+                except Exception:
+                    logger.exception("Error cleaning up crashed channel %s", name)
+                await asyncio.sleep(delay)
+                delay = min(CHANNEL_RESTART_MAX_DELAY, delay * 2)
 
     async def start_all(self) -> None:
         """Start all channels and the outbound dispatcher."""

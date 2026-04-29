@@ -7,6 +7,8 @@ import base64
 import logging
 import re
 import tempfile
+import time
+from collections.abc import Callable
 
 from telegram import (
     BotCommand,
@@ -29,6 +31,8 @@ logger = logging.getLogger(__name__)
 
 # Telegram limit is 4096 UTF-16 code units; leave some margin
 TELEGRAM_MAX_UTF16_LEN = 4000
+TELEGRAM_POLL_STALL_SECONDS = 90.0
+TELEGRAM_SEND_CONCURRENCY = 4
 
 # Regex to extract Markdown tables from raw content (before convert()).
 # Matches a table block: header row(s), separator row (---), and data rows.
@@ -38,6 +42,20 @@ _TABLE_BLOCK_RE = re.compile(
     r"(?:^[ \t]*\|[^\n]+\|[ \t]*$\n?)*",  # data rows (optional trailing newline)
     re.MULTILINE,
 )
+
+
+class _TrackingHTTPXRequest(HTTPXRequest):
+    """HTTPXRequest variant that records successful getUpdates calls."""
+
+    def __init__(self, *args, on_get_updates_success: Callable[[], None], **kwargs):
+        super().__init__(*args, **kwargs)
+        self._on_get_updates_success = on_get_updates_success
+
+    async def do_request(self, url: str, method: str, *args, **kwargs):
+        result = await super().do_request(url, method, *args, **kwargs)
+        if "/getUpdates" in url:
+            self._on_get_updates_success()
+        return result
 
 
 def _split_by_tables(markdown: str) -> list[tuple[str, str]]:
@@ -108,6 +126,7 @@ class TelegramChannel(BaseChannel):
         self._media_group_buffers: dict[str, dict] = {}
         self._media_group_tasks: dict[str, asyncio.Task] = {}
         self._last_poll_activity: float = 0.0
+        self._send_semaphore = asyncio.Semaphore(TELEGRAM_SEND_CONCURRENCY)
         self._pending_tables: dict[int, list[str]] = {}  # chat_id -> table markdown blocks
 
     async def start(self) -> None:
@@ -118,9 +137,22 @@ class TelegramChannel(BaseChannel):
 
         self._running = True
 
-        # Build the application with larger connection pool to avoid pool-timeout on long runs
-        req = HTTPXRequest(connection_pool_size=16, pool_timeout=5.0, connect_timeout=30.0, read_timeout=30.0)
-        builder = Application.builder().token(self.config.token).request(req).get_updates_request(req)
+        # Keep long-polling traffic separate from replies/progress so a stuck
+        # getUpdates request cannot starve /help or other outbound sends.
+        bot_request = HTTPXRequest(
+            connection_pool_size=32,
+            pool_timeout=10.0,
+            connect_timeout=30.0,
+            read_timeout=30.0,
+        )
+        updates_request = _TrackingHTTPXRequest(
+            connection_pool_size=4,
+            pool_timeout=10.0,
+            connect_timeout=30.0,
+            read_timeout=35.0,
+            on_get_updates_success=self._record_poll_activity,
+        )
+        builder = Application.builder().token(self.config.token).request(bot_request).get_updates_request(updates_request)
         if self.config.proxy:
             builder = builder.proxy(self.config.proxy).get_updates_proxy(self.config.proxy)
         self._app = builder.build()
@@ -204,11 +236,15 @@ class TelegramChannel(BaseChannel):
 
     async def _start_polling(self, *, drop_pending_updates: bool = False) -> None:
         """Start the updater's long-polling loop and record activity."""
-        self._last_poll_activity = asyncio.get_event_loop().time()
+        self._record_poll_activity()
         await self._app.updater.start_polling(
             allowed_updates=["message", "callback_query"],
             drop_pending_updates=drop_pending_updates,
         )
+
+    def _record_poll_activity(self) -> None:
+        """Record a successful polling request, not just an inbound message."""
+        self._last_poll_activity = time.monotonic()
 
     async def _restart_polling(self) -> None:
         """Restart the polling loop after it has stopped."""
@@ -231,6 +267,11 @@ class TelegramChannel(BaseChannel):
         polling_task = getattr(self._app.updater, "_Updater__polling_task", None)
         if polling_task is not None and polling_task.done():
             return True
+        if self._last_poll_activity:
+            idle_for = time.monotonic() - self._last_poll_activity
+            if idle_for > TELEGRAM_POLL_STALL_SECONDS:
+                logger.warning("Telegram polling appears stalled after %.1fs without getUpdates success", idle_for)
+                return True
         return False
 
     async def stop(self) -> None:
@@ -264,6 +305,11 @@ class TelegramChannel(BaseChannel):
         if ext in ("mp3", "m4a", "wav", "aac"):
             return "audio"
         return "document"
+
+    async def _call_telegram(self, func, *args, **kwargs):
+        """Limit concurrent outbound Telegram API calls."""
+        async with self._send_semaphore:
+            return await func(*args, **kwargs)
 
     async def send(self, msg: OutboundMessage) -> None:
         """Send a message through Telegram."""
@@ -304,7 +350,8 @@ class TelegramChannel(BaseChannel):
                 }.get(media_type, self._app.bot.send_document)
                 param = "photo" if media_type == "photo" else media_type if media_type in ("voice", "audio") else "document"
                 with open(media_path, 'rb') as f:
-                    await sender(
+                    await self._call_telegram(
+                        sender,
                         chat_id=chat_id,
                         **{param: f},
                         message_thread_id=thread_id,
@@ -313,7 +360,8 @@ class TelegramChannel(BaseChannel):
             except Exception as e:
                 filename = media_path.rsplit("/", 1)[-1]
                 logger.error("Failed to send media %s: %s", media_path, e)
-                await self._app.bot.send_message(
+                await self._call_telegram(
+                    self._app.bot.send_message,
                     chat_id=chat_id,
                     text=f"[Failed to send: {filename}]",
                     message_thread_id=thread_id,
@@ -357,7 +405,8 @@ class TelegramChannel(BaseChannel):
                             tg_entities = [TGMessageEntity.de_json(e.to_dict(), None) for e in entities]
                             chunks = split_entities(text, tg_entities, max_utf16_len=TELEGRAM_MAX_UTF16_LEN) if tg_entities else [(text, [])]
                             for chunk_text, chunk_entities in chunks:
-                                await self._app.bot.send_message(
+                                await self._call_telegram(
+                                    self._app.bot.send_message,
                                     chat_id=chat_id,
                                     text=chunk_text,
                                     message_thread_id=thread_id,
@@ -388,7 +437,8 @@ class TelegramChannel(BaseChannel):
                         is_first = False
                     try:
                         if use_draft and seg_index == 0 and index == 0:
-                            await self._app.bot.send_message_draft(
+                            await self._call_telegram(
+                                self._app.bot.send_message_draft,
                                 chat_id=chat_id,
                                 draft_id=draft_id,
                                 text=chunk_text,
@@ -396,7 +446,8 @@ class TelegramChannel(BaseChannel):
                                 entities=chunk_entities or None,
                             )
                         else:
-                            await self._app.bot.send_message(
+                            await self._call_telegram(
+                                self._app.bot.send_message,
                                 chat_id=chat_id,
                                 text=chunk_text,
                                 message_thread_id=thread_id,
@@ -407,7 +458,8 @@ class TelegramChannel(BaseChannel):
                     except Exception as e:
                         logger.warning("Entity send failed, falling back to plain text: %s", e)
                         try:
-                            await self._app.bot.send_message(
+                            await self._call_telegram(
+                                self._app.bot.send_message,
                                 chat_id=chat_id,
                                 text=chunk_text,
                                 message_thread_id=thread_id,
@@ -457,7 +509,8 @@ class TelegramChannel(BaseChannel):
                 tmp_path = tmp.name
             try:
                 with open(tmp_path, "rb") as f:
-                    await self._app.bot.send_photo(
+                    await self._call_telegram(
+                        self._app.bot.send_photo,
                         chat_id=chat_id,
                         photo=f,
                         message_thread_id=thread_id,
@@ -469,7 +522,7 @@ class TelegramChannel(BaseChannel):
 
     async def _on_tables(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle /tables command: resend recent table markdown as copyable text."""
-        self._last_poll_activity = asyncio.get_event_loop().time()
+        self._record_poll_activity()
         if not update.message or not self._app:
             return
 
@@ -478,7 +531,8 @@ class TelegramChannel(BaseChannel):
         tables = self._pending_tables.pop(chat_id, None)
 
         if not tables:
-            await update.message.reply_text(
+            await self._call_telegram(
+                update.message.reply_text,
                 "No tables in recent messages.",
                 do_quote=False,
                 **({"message_thread_id": thread_id} if thread_id else {}),
@@ -491,7 +545,8 @@ class TelegramChannel(BaseChannel):
                 tg_entities = [TGMessageEntity.de_json(e.to_dict(), None) for e in entities]
                 chunks = split_entities(text, tg_entities, max_utf16_len=TELEGRAM_MAX_UTF16_LEN) if tg_entities else [(text, [])]
                 for chunk_text, chunk_entities in chunks:
-                    await self._app.bot.send_message(
+                    await self._call_telegram(
+                        self._app.bot.send_message,
                         chat_id=chat_id,
                         text=chunk_text,
                         message_thread_id=thread_id,
@@ -499,7 +554,8 @@ class TelegramChannel(BaseChannel):
                     )
             except Exception:
                 logger.warning("Failed to send table markdown", exc_info=True)
-                await self._app.bot.send_message(
+                await self._call_telegram(
+                    self._app.bot.send_message,
                     chat_id=chat_id,
                     text=table_md,
                     message_thread_id=thread_id,
@@ -507,7 +563,7 @@ class TelegramChannel(BaseChannel):
 
     async def _on_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle /start command."""
-        self._last_poll_activity = asyncio.get_event_loop().time()
+        self._record_poll_activity()
         if not update.message or not update.effective_user:
             return
 
@@ -516,7 +572,8 @@ class TelegramChannel(BaseChannel):
         reply_kwargs = {"do_quote": False}
         if thread_id:
             reply_kwargs["message_thread_id"] = thread_id
-        await update.message.reply_text(
+        await self._call_telegram(
+            update.message.reply_text,
             f"👋 Hi {user.first_name}! I'm nanobot.\n\n"
             "Send me a message and I'll respond!\n"
             "Type /help to see available commands.",
@@ -525,14 +582,15 @@ class TelegramChannel(BaseChannel):
 
     async def _on_help(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle /help command, bypassing ACL so all users can access it."""
-        self._last_poll_activity = asyncio.get_event_loop().time()
+        self._record_poll_activity()
         if not update.message:
             return
         thread_id = getattr(update.message, "message_thread_id", None)
         reply_kwargs = {"do_quote": False}
         if thread_id:
             reply_kwargs["message_thread_id"] = thread_id
-        await update.message.reply_text(
+        await self._call_telegram(
+            update.message.reply_text,
             "🐈 nanobot commands:\n"
             "/new — Start a new conversation\n"
             "/compact — Compact conversation history\n"
@@ -669,7 +727,7 @@ class TelegramChannel(BaseChannel):
         # Download media if present
         if media_file and self._app:
             try:
-                file = await self._app.bot.get_file(media_file.file_id)
+                file = await self._call_telegram(self._app.bot.get_file, media_file.file_id)
                 ext = self._get_extension(media_type, getattr(media_file, 'mime_type', None))
 
                 # Save to workspace/media/
@@ -779,7 +837,7 @@ class TelegramChannel(BaseChannel):
         """Repeatedly send 'typing' action until cancelled."""
         try:
             while self._app:
-                await self._app.bot.send_chat_action(chat_id=int(chat_id), action="typing")
+                await self._call_telegram(self._app.bot.send_chat_action, chat_id=int(chat_id), action="typing")
                 await asyncio.sleep(4)
         except asyncio.CancelledError:
             pass

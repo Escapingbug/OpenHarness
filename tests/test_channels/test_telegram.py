@@ -53,13 +53,19 @@ async def test_telegram_registers_stop_command(monkeypatch):
             return None
 
     class FakeBuilder:
+        def __init__(self):
+            self.bot_request = None
+            self.updates_request = None
+
         def token(self, token):
             return self
 
         def request(self, request):
+            self.bot_request = request
             return self
 
         def get_updates_request(self, request):
+            self.updates_request = request
             return self
 
         def proxy(self, proxy):
@@ -71,8 +77,10 @@ async def test_telegram_registers_stop_command(monkeypatch):
         def build(self):
             return FakeApplication()
 
-    monkeypatch.setattr(telegram_mod.Application, "builder", lambda: FakeBuilder())
-    monkeypatch.setattr(telegram_mod, "HTTPXRequest", lambda **kwargs: object())
+    builder = FakeBuilder()
+    monkeypatch.setattr(telegram_mod.Application, "builder", lambda: builder)
+    monkeypatch.setattr(telegram_mod, "HTTPXRequest", lambda **kwargs: SimpleNamespace(kind="bot", kwargs=kwargs))
+    monkeypatch.setattr(telegram_mod, "_TrackingHTTPXRequest", lambda **kwargs: SimpleNamespace(kind="updates", kwargs=kwargs))
     monkeypatch.setattr(
         telegram_mod,
         "CommandHandler",
@@ -104,6 +112,10 @@ async def test_telegram_registers_stop_command(monkeypatch):
 
     await channel.start()
 
+    assert builder.bot_request.kind == "bot"
+    assert builder.updates_request.kind == "updates"
+    assert builder.bot_request is not builder.updates_request
+
     commands = [
         handler.command
         for handler in registered_handlers
@@ -131,9 +143,20 @@ def test_telegram_polling_watchdog_does_not_restart_on_idle_time():
         MessageBus(),
     )
     channel._app = SimpleNamespace(updater=SimpleNamespace(running=True))
-    channel._last_poll_activity = 1.0
+    channel._last_poll_activity = telegram_mod.time.monotonic()
 
     assert channel._needs_polling_restart() is False
+
+
+def test_telegram_polling_watchdog_restarts_on_stale_poll_activity():
+    channel = TelegramChannel(
+        TelegramConfig(token="token", allow_from=["*"], proxy=None, reply_to_message=False),
+        MessageBus(),
+    )
+    channel._app = SimpleNamespace(updater=SimpleNamespace(running=True))
+    channel._last_poll_activity = telegram_mod.time.monotonic() - telegram_mod.TELEGRAM_POLL_STALL_SECONDS - 1
+
+    assert channel._needs_polling_restart() is True
 
 
 @pytest.mark.asyncio
