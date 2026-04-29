@@ -1539,28 +1539,18 @@ class TestGatewayEmbeddedCron:
         from ohmo.gateway.runtime import GatewayStreamUpdate
 
         bus = MessageBus()
-        outbound_messages: list[OutboundMessage] = []
 
-        # Collect outbound messages
-        async def collect_outbound():
-            while True:
-                try:
-                    msg = await asyncio.wait_for(bus.consume_outbound(), timeout=0.5)
-                    outbound_messages.append(msg)
-                except asyncio.TimeoutError:
-                    break
-                except asyncio.CancelledError:
-                    break
-
-        # Mock runtime_pool
+        # Mock runtime_pool — stream_message must be an async generator
         mock_pool = AsyncMock()
-        mock_pool.stream_message.return_value = iter([
-            GatewayStreamUpdate(
+
+        async def _fake_stream(message, session_key):
+            yield GatewayStreamUpdate(
                 kind="final",
                 text="⏰ 提醒：review PR",
-                metadata={"_session_key": "telegram:12345:user1"},
-            ),
-        ])
+                metadata={"_session_key": session_key},
+            )
+
+        mock_pool.stream_message = _fake_stream
 
         from openharness.services.cron_scheduler import execute_job
 

@@ -223,6 +223,7 @@ class OhmoGatewayService:
             self._publish_pending_restart_notice(),
             name="ohmo-gateway-restart-notice",
         )
+        cron_task = self._start_cron_task()
         stop_event = asyncio.Event()
         self._stop_event = stop_event
         self._restart_requested = False
@@ -241,10 +242,15 @@ class OhmoGatewayService:
             self._bridge.stop()
             bridge_task.cancel()
             manager_task.cancel()
+            if cron_task is not None:
+                cron_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await bridge_task
             with contextlib.suppress(asyncio.CancelledError):
                 await manager_task
+            if cron_task is not None:
+                with contextlib.suppress(asyncio.CancelledError):
+                    await cron_task
             if not restart_notice_task.done():
                 restart_notice_task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
@@ -256,6 +262,34 @@ class OhmoGatewayService:
         if self._restart_requested:
             self._exec_restart()
         return 0
+
+    def _start_cron_task(self) -> asyncio.Task | None:
+        """Start the embedded cron scheduler as an asyncio task.
+
+        Returns the task, or None if an independent cron daemon is already
+        running (to avoid duplicate scheduling).
+        """
+        from openharness.services.cron_scheduler import is_scheduler_running, run_scheduler_loop
+
+        if is_scheduler_running():
+            logger.info("ohmo gateway: independent cron daemon is running, skipping embedded cron")
+            return None
+
+        async def _cron_loop() -> None:
+            try:
+                await run_scheduler_loop(
+                    skip_signal_handlers=True,
+                    runtime_pool=self._runtime_pool,
+                    bus=self._bus,
+                )
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                logger.exception("ohmo gateway: embedded cron scheduler crashed")
+
+        task = asyncio.create_task(_cron_loop(), name="ohmo-gateway-cron")
+        logger.info("ohmo gateway: embedded cron scheduler started")
+        return task
 
 
 def start_gateway_process(cwd: str | Path | None = None, workspace: str | Path | None = None) -> int:

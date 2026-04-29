@@ -152,15 +152,24 @@ class TestExecuteAgentJob:
         from openharness.channels.bus.events import OutboundMessage, InboundMessage
         from ohmo.gateway.runtime import GatewayStreamUpdate
 
-        # Mock runtime_pool
+        # Mock runtime_pool — stream_message must be an async generator
         mock_pool = AsyncMock()
-        mock_pool.stream_message.return_value = iter([
-            GatewayStreamUpdate(
+        stream_calls: list[tuple] = []
+
+        async def _fake_stream(message, session_key):
+            stream_calls.append((message, session_key))
+            yield GatewayStreamUpdate(
+                kind="progress",
+                text="Thinking...",
+                metadata={"_progress": True, "_session_key": session_key},
+            )
+            yield GatewayStreamUpdate(
                 kind="final",
                 text="⏰ 提醒：review PR",
-                metadata={"_session_key": "telegram:12345:user1"},
-            ),
-        ])
+                metadata={"_session_key": session_key},
+            )
+
+        mock_pool.stream_message = _fake_stream
 
         # Mock bus
         mock_bus = AsyncMock()
@@ -180,9 +189,8 @@ class TestExecuteAgentJob:
         assert entry["status"] == "success"
         assert entry["name"] == "remind-review"
         # stream_message should have been called with a synthetic InboundMessage
-        mock_pool.stream_message.assert_called_once()
-        call_args = mock_pool.stream_message.call_args
-        inbound_msg = call_args[0][0]
+        assert len(stream_calls) == 1
+        inbound_msg, session_key = stream_calls[0]
         assert inbound_msg.content == "提醒用户 review PR"
         assert inbound_msg.channel == "telegram"
         assert inbound_msg.chat_id == "12345"
@@ -224,7 +232,12 @@ class TestExecuteAgentJob:
     async def test_agent_job_stream_error(self) -> None:
         """Agent job should handle stream_message exceptions gracefully."""
         mock_pool = AsyncMock()
-        mock_pool.stream_message.side_effect = RuntimeError("LLM API error")
+
+        async def _failing_stream(message, session_key):
+            raise RuntimeError("LLM API error")
+            yield  # make this an async generator
+
+        mock_pool.stream_message = _failing_stream
         mock_bus = AsyncMock()
 
         job = {
@@ -245,7 +258,7 @@ class TestSchedulerLoop:
     @pytest.mark.asyncio
     async def test_once_mode_with_no_jobs(self) -> None:
         """Scheduler loop in once-mode should complete without error when no jobs exist."""
-        await run_scheduler_loop(once=True)
+        await run_scheduler_loop(once=True, skip_signal_handlers=True)
 
     @pytest.mark.asyncio
     async def test_once_mode_fires_due_job(self) -> None:
