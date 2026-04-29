@@ -143,6 +143,104 @@ class TestExecuteJob:
                 assert entry["status"] == "timeout"
 
 
+class TestExecuteAgentJob:
+    """Tests for agent-type cron job execution (requires runtime_pool + bus)."""
+
+    @pytest.mark.asyncio
+    async def test_agent_job_with_runtime_pool(self) -> None:
+        """Agent job should call runtime_pool.stream_message and publish outbound."""
+        from openharness.channels.bus.events import OutboundMessage, InboundMessage
+        from ohmo.gateway.runtime import GatewayStreamUpdate
+
+        # Mock runtime_pool
+        mock_pool = AsyncMock()
+        mock_pool.stream_message.return_value = iter([
+            GatewayStreamUpdate(
+                kind="final",
+                text="⏰ 提醒：review PR",
+                metadata={"_session_key": "telegram:12345:user1"},
+            ),
+        ])
+
+        # Mock bus
+        mock_bus = AsyncMock()
+
+        job = {
+            "name": "remind-review",
+            "command": "",
+            "type": "agent",
+            "prompt": "提醒用户 review PR",
+            "session_key": "telegram:12345:user1",
+            "channel": "telegram",
+            "chat_id": "12345",
+            "cwd": "/tmp",
+        }
+        entry = await execute_job(job, runtime_pool=mock_pool, bus=mock_bus)
+
+        assert entry["status"] == "success"
+        assert entry["name"] == "remind-review"
+        # stream_message should have been called with a synthetic InboundMessage
+        mock_pool.stream_message.assert_called_once()
+        call_args = mock_pool.stream_message.call_args
+        inbound_msg = call_args[0][0]
+        assert inbound_msg.content == "提醒用户 review PR"
+        assert inbound_msg.channel == "telegram"
+        assert inbound_msg.chat_id == "12345"
+        # Outbound should have been published
+        mock_bus.publish_outbound.assert_called()
+
+    @pytest.mark.asyncio
+    async def test_agent_job_without_runtime_pool(self) -> None:
+        """Agent job without runtime_pool should record error, not crash."""
+        job = {
+            "name": "agent-no-pool",
+            "command": "",
+            "type": "agent",
+            "prompt": "hello",
+            "session_key": "t:1:u",
+            "channel": "t",
+            "chat_id": "1",
+            "cwd": "/tmp",
+        }
+        entry = await execute_job(job)
+        assert entry["status"] == "error"
+        assert "runtime_pool" in entry["stderr"].lower() or "no runtime" in entry["stderr"].lower()
+
+    @pytest.mark.asyncio
+    async def test_shell_job_unchanged_with_runtime_pool(self) -> None:
+        """Shell job should still use subprocess even when runtime_pool is provided."""
+        mock_pool = AsyncMock()
+        mock_bus = AsyncMock()
+
+        job = {"name": "shell-with-pool", "command": "echo still-shell", "cwd": "/tmp"}
+        entry = await execute_job(job, runtime_pool=mock_pool, bus=mock_bus)
+
+        assert entry["status"] == "success"
+        assert "still-shell" in entry["stdout"]
+        # runtime_pool should NOT have been called
+        mock_pool.stream_message.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_agent_job_stream_error(self) -> None:
+        """Agent job should handle stream_message exceptions gracefully."""
+        mock_pool = AsyncMock()
+        mock_pool.stream_message.side_effect = RuntimeError("LLM API error")
+        mock_bus = AsyncMock()
+
+        job = {
+            "name": "agent-error",
+            "command": "",
+            "type": "agent",
+            "prompt": "hello",
+            "session_key": "t:1:u",
+            "channel": "t",
+            "chat_id": "1",
+            "cwd": "/tmp",
+        }
+        entry = await execute_job(job, runtime_pool=mock_pool, bus=mock_bus)
+        assert entry["status"] == "error"
+
+
 class TestSchedulerLoop:
     @pytest.mark.asyncio
     async def test_once_mode_with_no_jobs(self) -> None:
@@ -164,8 +262,14 @@ class TestSchedulerLoop:
         jobs[0]["next_run"] = (now - timedelta(minutes=1)).isoformat()
         save_cron_jobs(jobs)
 
-        await run_scheduler_loop(once=True)
+        await run_scheduler_loop(once=True, skip_signal_handlers=True)
 
         entries = load_history(job_name="test-once")
         assert len(entries) == 1
         assert entries[0]["status"] == "success"
+
+    @pytest.mark.asyncio
+    async def test_once_mode_skip_signal_handlers(self) -> None:
+        """run_scheduler_loop with skip_signal_handlers=True should work on Windows."""
+        # This should not raise NotImplementedError on Windows
+        await run_scheduler_loop(once=True, skip_signal_handlers=True)

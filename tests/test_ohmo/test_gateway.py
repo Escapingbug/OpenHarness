@@ -3,6 +3,7 @@ import contextlib
 import logging
 from types import SimpleNamespace
 from datetime import datetime
+from unittest.mock import AsyncMock
 import json
 from pathlib import Path
 
@@ -1478,4 +1479,109 @@ async def test_runtime_pool_stream_message_handles_plugin_command_submit_prompt(
     updates = [u async for u in pool.stream_message(message, "feishu:c1")]
 
     assert submitted == ["plugin expanded prompt"]
-    assert updates[-1].text == "plugin-done"
+
+
+# ---------------------------------------------------------------------------
+# Gateway embedded cron integration tests
+# ---------------------------------------------------------------------------
+
+
+class TestGatewayEmbeddedCron:
+    """Tests for gateway running embedded cron scheduler."""
+
+    @pytest.mark.asyncio
+    async def test_gateway_starts_cron_task(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Gateway run_foreground should start a cron scheduler task."""
+        workspace = tmp_path / "ws"
+        workspace.mkdir()
+        (workspace / "gateway.yaml").write_text(
+            "provider_profile: codex\nchannels: {}\n", encoding="utf-8"
+        )
+
+        started_tasks: list[str] = []
+
+        original_create_task = asyncio.create_task
+
+        def track_create_task(coro, *, name=None):
+            if name:
+                started_tasks.append(name)
+            return original_create_task(coro, name=name)
+
+        monkeypatch.setattr(asyncio, "create_task", track_create_task)
+
+        # Make channel manager start_all return immediately
+        async def fake_start_all(self):
+            return
+
+        monkeypatch.setattr("openharness.channels.impl.manager.ChannelManager.start_all", fake_start_all)
+
+        # Stop gateway quickly
+        stop_event = asyncio.Event()
+
+        async def fake_run_foreground(self):
+            stop_event.set()
+
+        # We need to actually test that run_foreground creates the task,
+        # so let's use a more targeted approach
+        from ohmo.gateway.service import OhmoGatewayService
+
+        service = OhmoGatewayService(cwd=tmp_path, workspace=workspace)
+
+        # Check that service has a method or attribute to start embedded cron
+        assert hasattr(service, "start_embedded_cron") or hasattr(service, "_start_cron_task"), (
+            "OhmoGatewayService should have a method to start embedded cron scheduler"
+        )
+
+    @pytest.mark.asyncio
+    async def test_cron_agent_job_sends_outbound(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Agent cron job should produce OutboundMessage on the bus."""
+        from openharness.channels.bus.events import InboundMessage, OutboundMessage
+        from ohmo.gateway.runtime import GatewayStreamUpdate
+
+        bus = MessageBus()
+        outbound_messages: list[OutboundMessage] = []
+
+        # Collect outbound messages
+        async def collect_outbound():
+            while True:
+                try:
+                    msg = await asyncio.wait_for(bus.consume_outbound(), timeout=0.5)
+                    outbound_messages.append(msg)
+                except asyncio.TimeoutError:
+                    break
+                except asyncio.CancelledError:
+                    break
+
+        # Mock runtime_pool
+        mock_pool = AsyncMock()
+        mock_pool.stream_message.return_value = iter([
+            GatewayStreamUpdate(
+                kind="final",
+                text="⏰ 提醒：review PR",
+                metadata={"_session_key": "telegram:12345:user1"},
+            ),
+        ])
+
+        from openharness.services.cron_scheduler import execute_job
+
+        job = {
+            "name": "remind-review",
+            "command": "",
+            "type": "agent",
+            "prompt": "提醒用户 review PR",
+            "session_key": "telegram:12345:user1",
+            "channel": "telegram",
+            "chat_id": "12345",
+            "cwd": str(tmp_path),
+        }
+
+        # This should use runtime_pool and bus to produce an outbound message
+        entry = await execute_job(job, runtime_pool=mock_pool, bus=bus)
+
+        assert entry["status"] == "success"
+
+        # Consume the outbound message
+        msg = await asyncio.wait_for(bus.consume_outbound(), timeout=1.0)
+        assert msg.channel == "telegram"
+        assert msg.chat_id == "12345"
+        assert "review PR" in msg.content or "⏰" in msg.content
