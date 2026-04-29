@@ -9,6 +9,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, AsyncIterator, Awaitable, Callable
+from uuid import uuid4
 
 from openharness.api.client import (
     ApiMessageCompleteEvent,
@@ -18,6 +19,7 @@ from openharness.api.client import (
     SupportsStreamingMessages,
 )
 from openharness.api.usage import UsageSnapshot
+from openharness.config.paths import get_data_dir
 from openharness.engine.messages import ConversationMessage, ToolResultBlock
 from openharness.engine.stream_events import (
     AssistantTextDelta,
@@ -31,6 +33,7 @@ from openharness.engine.stream_events import (
 )
 from openharness.hooks import HookEvent, HookExecutor
 from openharness.permissions.checker import PermissionChecker
+from openharness.services.tool_outputs import tool_output_inline_chars, tool_output_preview_chars
 from openharness.tools.base import ToolExecutionContext
 from openharness.tools.base import ToolRegistry
 
@@ -65,6 +68,9 @@ def _is_prompt_too_long_error(exc: Exception) -> bool:
             "too many tokens",
             "too large for the model",
             "maximum context length",
+            "exceed_context",
+            "exceeds the available context size",
+            "available context size",
         )
     )
 
@@ -452,6 +458,49 @@ def _record_tool_carryover(
         _remember_work_log(context.tool_metadata, entry="Exited plan mode")
 
 
+def _tool_artifact_dir() -> Path:
+    artifact_dir = get_data_dir() / "tool_artifacts"
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+    return artifact_dir
+
+
+def _safe_tool_artifact_name(tool_name: str) -> str:
+    normalized = re.sub(r"[^A-Za-z0-9_.-]+", "_", tool_name.strip())
+    return (normalized or "tool")[:80]
+
+
+def _offload_tool_output_if_needed(
+    *,
+    tool_name: str,
+    tool_use_id: str,
+    output: str,
+) -> tuple[str, Path | None]:
+    inline_limit = tool_output_inline_chars()
+    if len(output) <= inline_limit:
+        return output, None
+
+    artifact_path = (
+        _tool_artifact_dir()
+        / f"{time.strftime('%Y%m%d-%H%M%S')}-{_safe_tool_artifact_name(tool_name)}-{uuid4().hex[:12]}.txt"
+    )
+    artifact_path.write_text(output, encoding="utf-8", errors="replace")
+    preview = output[:tool_output_preview_chars()]
+    omitted = max(0, len(output) - len(preview))
+    inline = (
+        "[Tool output truncated]\n"
+        f"Tool: {tool_name}\n"
+        f"Tool use id: {tool_use_id}\n"
+        f"Original size: {len(output)} chars\n"
+        f"Full output saved to: {artifact_path}\n"
+        f"Inline preview: first {len(preview)} chars"
+    )
+    if omitted:
+        inline += f" ({omitted} chars omitted)"
+    if preview:
+        inline += f"\n\nPreview:\n{preview}"
+    return inline, artifact_path
+
+
 async def run_query(
     context: QueryContext,
     messages: list[ConversationMessage],
@@ -757,9 +806,16 @@ async def _execute_tool_call(
     elapsed = time.monotonic() - t0
     log.debug("executed %s in %.2fs err=%s output_len=%d",
               tool_name, elapsed, result.is_error, len(result.output or ""))
+    inline_output, artifact_path = _offload_tool_output_if_needed(
+        tool_name=tool_name,
+        tool_use_id=tool_use_id,
+        output=result.output,
+    )
+    if artifact_path is not None:
+        _remember_active_artifact(context.tool_metadata, str(artifact_path))
     tool_result = ToolResultBlock(
         tool_use_id=tool_use_id,
-        content=result.output,
+        content=inline_output,
         is_error=result.is_error,
     )
     _record_tool_carryover(
