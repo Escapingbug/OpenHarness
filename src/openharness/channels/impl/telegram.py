@@ -144,12 +144,14 @@ class TelegramChannel(BaseChannel):
             pool_timeout=10.0,
             connect_timeout=30.0,
             read_timeout=30.0,
+            httpx_kwargs={"trust_env": False},
         )
         updates_request = _TrackingHTTPXRequest(
             connection_pool_size=4,
             pool_timeout=10.0,
             connect_timeout=30.0,
             read_timeout=35.0,
+            httpx_kwargs={"trust_env": False},
             on_get_updates_success=self._record_poll_activity,
         )
         builder = Application.builder().token(self.config.token).request(bot_request).get_updates_request(updates_request)
@@ -228,11 +230,8 @@ class TelegramChannel(BaseChannel):
             if not self._running or not self._app:
                 break
             if self._needs_polling_restart():
-                logger.warning("Polling is not running, restarting...")
-                try:
-                    await self._restart_polling()
-                except Exception as e:
-                    logger.error("Failed to restart polling: %s", e)
+                logger.warning("Polling is unhealthy; restarting Telegram channel...")
+                raise RuntimeError("Telegram polling stalled")
 
     async def _start_polling(self, *, drop_pending_updates: bool = False) -> None:
         """Start the updater's long-polling loop and record activity."""
@@ -289,7 +288,13 @@ class TelegramChannel(BaseChannel):
 
         if self._app:
             logger.info("Stopping Telegram bot...")
-            await self._app.updater.stop()
+            try:
+                if self._app.updater.running:
+                    await asyncio.wait_for(self._app.updater.stop(), timeout=15.0)
+            except asyncio.TimeoutError:
+                logger.warning("Timed out stopping Telegram updater; forcing application shutdown")
+            except Exception:
+                logger.warning("Error stopping Telegram updater", exc_info=True)
             await self._app.stop()
             await self._app.shutdown()
             self._app = None
